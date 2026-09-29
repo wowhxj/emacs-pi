@@ -14,6 +14,9 @@
 When nil, use Pi's environment or default agent directory."
   :type '(choice (const nil) directory) :group 'emacs-pi)
 
+(defvar emacs-pi-history--cache (make-hash-table :test #'equal)
+  "Session previews keyed by path and file size/mtime.")
+
 (defun emacs-pi-history-directory ()
   "Return the directory to scan for Pi session JSONL files."
   (expand-file-name
@@ -44,16 +47,17 @@ When nil, use Pi's environment or default agent directory."
         (list :ok nil :kind error-kind :id cursor)
       (list :ok t :entries branch))))
 
-(defun emacs-pi-history--record (path)
+(defun emacs-pi-history--record (path &optional attributes)
   "Read a bounded session preview from PATH, returning a plist or nil."
   (condition-case nil
       (with-temp-buffer
-        (let* ((size (file-attribute-size (file-attributes path)))
+        (let* ((attributes (or attributes (file-attributes path)))
+               (size (file-attribute-size attributes))
                (limit (min size (* 4 1024 1024)))
                (full-read-p (= limit size)))
           (insert-file-contents path nil 0 limit)
         (goto-char (point-min))
-        (let (id cwd created preview name)
+        (let (id cwd created preview last-preview name (message-count 0))
           (while (not (eobp))
             (let ((line (buffer-substring-no-properties
                          (line-beginning-position) (line-end-position))))
@@ -67,20 +71,36 @@ When nil, use Pi's environment or default agent directory."
                                          created (emacs-pi--jget entry "timestamp")))
                         ("session_info" (setq name (emacs-pi--jget entry "name")))
                         ("message"
-                         (when (and (null preview)
-                                    (equal (emacs-pi--jget
-                                            (emacs-pi--jget entry "message") "role")
-                                           "user"))
-                           (setq preview (emacs-pi--message-text
-                                          (emacs-pi--jget entry "message")))))))
+                         (cl-incf message-count)
+                         (when (equal (emacs-pi--jget
+                                       (emacs-pi--jget entry "message") "role")
+                                      "user")
+                           (let ((text (emacs-pi--message-text
+                                        (emacs-pi--jget entry "message"))))
+                             (when (and text (not (string-empty-p text)))
+                               (unless preview (setq preview text))
+                               (setq last-preview text)))))))
                   (error nil))))
             (forward-line 1))
           (when (and (stringp id) (stringp cwd))
             (list :id id :cwd cwd :path path :created created
-                  :name name :preview preview
-                  :modified (file-attribute-modification-time
-                             (file-attributes path)))))))
+                  :name name :preview preview :last-preview last-preview
+                  :message-count (and full-read-p message-count)
+                  :modified (file-attribute-modification-time attributes))))))
     (error nil)))
+
+(defun emacs-pi-history--cached-record (path)
+  "Return PATH's preview, reparsing only when its file metadata changes."
+  (let* ((attributes (file-attributes path))
+         (key (and attributes
+                   (list (file-attribute-size attributes)
+                         (file-attribute-modification-time attributes))))
+         (cached (gethash path emacs-pi-history--cache)))
+    (if (and key (equal key (car cached)))
+        (cdr cached)
+      (let ((record (and key (emacs-pi-history--record path attributes))))
+        (puthash path (cons key record) emacs-pi-history--cache)
+        record))))
 
 (defun emacs-pi-history-list (&optional root)
   "List saved sessions, optionally filtered to ROOT.
@@ -88,13 +108,12 @@ This is a read-only local index; it never edits Pi's session files."
   (let* ((directory (emacs-pi-history-directory))
          (paths (when (file-directory-p directory)
                   (directory-files-recursively directory "\\.jsonl\\'")))
-         (records (delq nil (mapcar #'emacs-pi-history--record paths))))
+         (records (delq nil (mapcar #'emacs-pi-history--cached-record paths))))
     (when root
       (setq records
             (seq-filter (lambda (item)
-                          (string= (file-name-as-directory
-                                    (expand-file-name (plist-get item :cwd)))
-                                   (file-name-as-directory (expand-file-name root))))
+                          (and (file-directory-p (plist-get item :cwd))
+                               (file-equal-p (plist-get item :cwd) root)))
                         records)))
     (sort records
           (lambda (a b) (time-less-p (plist-get b :modified)

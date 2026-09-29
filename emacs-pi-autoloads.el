@@ -32,13 +32,13 @@
 ;;; Generated autoloads from emacs-pi.el
 
 (autoload 'emacs-pi-chat "emacs-pi"
-"Choose ROOT and start a new independent Pi chat.
+"Choose a saved Pi session in ROOT, or start a new one.
 
 (fn &optional ROOT)" t)
 (autoload 'emacs-pi-new-session "emacs-pi"
 "Start another Pi chat in the current chat's project." t)
 (autoload 'emacs-pi-resume "emacs-pi"
-"Choose a persisted Pi session and open its active conversation." t)
+"Choose a persisted Pi session from a detailed global list." t)
 (autoload 'emacs-pi-switch-chat "emacs-pi"
 "Switch among active emacs-pi chat buffers." t)
 (register-definition-prefixes "emacs-pi" '("emacs-pi-"))
@@ -52,6 +52,7 @@
 ;;; Generated autoloads from emacs-pi-ui.el
 
 (register-definition-prefixes "emacs-pi-ui" '("emacs-pi-"))
+
 
 ;;; End of scraped data
 

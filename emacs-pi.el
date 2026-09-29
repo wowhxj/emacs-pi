@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -23,6 +23,7 @@
 (require 'emacs-pi-input)
 
 (defgroup emacs-pi nil "Emacs client for Pi Coding Agent." :group 'tools)
+(defvar vertico-sort-function)
 
 (defcustom emacs-pi-executable "pi"
   "Pi executable used for each chat process."
@@ -132,13 +133,17 @@
 
 ;;;###autoload
 (defun emacs-pi-chat (&optional root)
-  "Choose ROOT and start a new independent Pi chat."
+  "Choose a saved Pi session in ROOT, or start a new one."
   (interactive)
   (let* ((start (if buffer-file-name
                     (file-name-directory buffer-file-name) default-directory))
          (directory (or root (read-directory-name "Pi project root: " start
                                                    nil t))))
-    (emacs-pi--open directory)))
+    (setq directory (emacs-pi--local-root directory))
+    (let ((records (emacs-pi-history-list directory)))
+      (if records
+          (emacs-pi--pick-session records directory)
+        (emacs-pi--open directory)))))
 
 ;;;###autoload
 (defun emacs-pi-new-session ()
@@ -146,43 +151,95 @@
   (interactive)
   (emacs-pi--open (emacs-pi-session-root (emacs-pi--require-session))))
 
+(defun emacs-pi--session-column (value width)
+  "Return VALUE fitted and padded to display WIDTH."
+  (let* ((clean (replace-regexp-in-string "[[:space:]\n\r]+" " " (or value "")))
+         (short (truncate-string-to-width clean width nil nil "…")))
+    (concat short (make-string (max 0 (- width (string-width short))) ?\s))))
+
+(defun emacs-pi--middle-truncate (value width)
+  "Shorten VALUE to WIDTH while preserving its beginning and end."
+  (if (<= (string-width value) width)
+      value
+    (let* ((usable (1- width))
+           (head (/ (+ usable 1) 2))
+           (tail (- usable head))
+           (total (string-width value)))
+      (concat (truncate-string-to-width value head)
+              "…"
+              (truncate-string-to-width value total (- total tail))))))
+
+(defun emacs-pi--session-label (record)
+  "Format RECORD as date, ID, workspace, and prompt preview."
+  (let* ((date (format-time-string "%Y-%m-%d %H:%M"
+                                   (plist-get record :modified)))
+         (id (plist-get record :id))
+         (cwd (abbreviate-file-name (plist-get record :cwd)))
+         (name (plist-get record :name))
+         (prompt (or (plist-get record :last-preview)
+                     (plist-get record :preview)))
+         (preview (cond ((and (stringp name) (stringp prompt)
+                              (not (string-empty-p prompt)))
+                         (format "%s · %s" name prompt))
+                        (name name)
+                        (prompt prompt)
+                        (t "(empty session)")))
+         (preview-width (max 20 (- (window-body-width) 72))))
+    (concat (emacs-pi--session-column date 16) "  "
+            (emacs-pi--session-column (substring id 0 (min 12 (length id))) 12)
+            "  " (emacs-pi--session-column
+                   (emacs-pi--middle-truncate cwd 34) 34) "  "
+            (truncate-string-to-width
+             (replace-regexp-in-string "[[:space:]\n\r]+" " " preview)
+             preview-width nil nil "…"))))
+
+(defun emacs-pi--resume-record (record)
+  "Open RECORD, switching to a live chat when already open."
+  (let* ((path (file-truename (plist-get record :path)))
+         (cwd (plist-get record :cwd))
+         (existing nil))
+    (unless (file-directory-p cwd)
+      (user-error "Pi session project directory no longer exists: %s" cwd))
+    (maphash
+     (lambda (_id buffer)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (when-let* ((session-file
+                        (and emacs-pi--session
+                             (emacs-pi-session-session-file emacs-pi--session))))
+             (when (and (file-exists-p session-file)
+                        (file-equal-p session-file path))
+               (setq existing buffer))))))
+     emacs-pi--chats)
+    (if existing (pop-to-buffer existing)
+      (emacs-pi--open cwd path))))
+
+(defun emacs-pi--pick-session (records &optional new-root)
+  "Choose from RECORDS; offer a new session in NEW-ROOT when supplied."
+  (let* ((choices (mapcar (lambda (record)
+                            (cons (emacs-pi--session-label record) record))
+                          records))
+         (choices (if new-root
+                      (append choices '(("[New session]" . :new)))
+                    choices))
+         (selected (let ((vertico-sort-function nil))
+                     (completing-read
+                      (if new-root
+                          "Pi session in this directory (choose or create): "
+                        "Resume Pi (date | ID | directory | prompt): ")
+                      choices nil t)))
+         (record (cdr (assoc selected choices))))
+    (cond ((eq record :new) (emacs-pi--open new-root))
+          (record (emacs-pi--resume-record record)))))
+
 ;;;###autoload
 (defun emacs-pi-resume ()
-  "Choose a persisted Pi session and open its active conversation."
+  "Choose a persisted Pi session from a detailed global list."
   (interactive)
-  (let* ((records (emacs-pi-history-list))
-         (choices
-          (mapcar
-           (lambda (record)
-             (let ((label (format "%s  [%s]  %s"
-                                  (or (plist-get record :name)
-                                      (plist-get record :preview) "Untitled")
-                                  (file-name-nondirectory
-                                   (directory-file-name (plist-get record :cwd)))
-                                  (substring (plist-get record :id) 0 8))))
-               (cons (truncate-string-to-width
-                      (replace-regexp-in-string "[\r\n]+" " " label)
-                      130 nil nil "…") record)))
-           records)))
-    (unless choices (user-error "No Pi sessions found in %s"
-                                (emacs-pi-history-directory)))
-    (let* ((selected (completing-read "Resume Pi session: " choices nil t))
-           (record (cdr (assoc selected choices)))
-           (path (file-truename (plist-get record :path)))
-           (existing nil))
-      (maphash
-       (lambda (_id buffer)
-         (when (buffer-live-p buffer)
-           (with-current-buffer buffer
-             (when (and emacs-pi--session
-                        (emacs-pi-session-session-file emacs-pi--session)
-                        (string= (file-truename
-                                  (emacs-pi-session-session-file emacs-pi--session))
-                                 path))
-               (setq existing buffer)))))
-       emacs-pi--chats)
-      (if existing (pop-to-buffer existing)
-        (emacs-pi--open (plist-get record :cwd) path)))))
+  (let ((records (emacs-pi-history-list)))
+    (unless records
+      (user-error "No Pi sessions found in %s" (emacs-pi-history-directory)))
+    (emacs-pi--pick-session records)))
 
 ;;;###autoload
 (defun emacs-pi-switch-chat ()
@@ -278,6 +335,8 @@
     (princ "/queue  /restart  /stop  /doctor  /help\n\n")
     (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
     (princ "C-c C-r resume · C-c C-b switch chats · C-c C-q hide\n")
+    (princ "i focus input from history · C-a stay after You>\n")
+    (princ "RET/TAB on a Process or tool heading toggles its steps\n")
     (princ "M-p/M-n prompt history · TAB path/command completion\n\n")
     (princ "M-x emacs-pi-attach-image adds a PNG/JPEG to the next prompt.\n")
     (princ "@path is a path hint; Pi may use its tools to inspect the file.\n")))
@@ -322,6 +381,17 @@
                            (progn
                              (setf (emacs-pi-session-model session)
                                    (plist-get set-result :data))
+                             (emacs-pi-rpc-request
+                              (emacs-pi-session-connection session)
+                              "get_state" nil
+                              (lambda (state-result)
+                                (when (plist-get state-result :ok)
+                                  (setf (emacs-pi-session-thinking session)
+                                        (emacs-pi--jget
+                                         (plist-get state-result :data)
+                                         "thinkingLevel"))
+                                  (emacs-pi-ui-schedule session nil))))
+                             (emacs-pi-session-refresh-stats session)
                              (emacs-pi-ui-schedule session nil))
                          (message "Pi model: %s"
                                   (plist-get set-result :message))))))))))))))))

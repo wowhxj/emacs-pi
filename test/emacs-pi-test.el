@@ -59,6 +59,9 @@
             (should (emacs-pi-test--wait
                      (lambda () (and (eq (emacs-pi-session-phase one) 'ready)
                                      (eq (emacs-pi-session-phase two) 'ready)))))
+            (should (emacs-pi-test--wait
+                     (lambda () (and (emacs-pi-session-context-usage one)
+                                     (emacs-pi-session-context-usage two)))))
             (with-current-buffer first
               (emacs-pi-input-set "hello")
               (emacs-pi-send)
@@ -68,6 +71,7 @@
                                      (not (emacs-pi-session-running one))))))
             (with-current-buffer first
               (emacs-pi-ui-render one)
+              (should (string-match-p "1.2k/10.0k" (emacs-pi-ui--header)))
               (should (equal (emacs-pi-input-text) "next draft"))
               (should (save-excursion
                         (goto-char (point-min))
@@ -106,6 +110,185 @@
               (should (string-empty-p (emacs-pi-input-text))))))
       (when (buffer-live-p chat) (kill-buffer chat))
       (delete-directory root t))))
+
+(ert-deftest emacs-pi-composer-navigation-and-background ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (session (make-emacs-pi-session :root root :client-id "nav-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "hello  ")
+          (let ((begin (emacs-pi-input-beginning)))
+            (goto-char (point-min))
+            (emacs-pi-ui-focus-or-insert)
+            (should (= (point) (+ begin 5)))
+            (should (equal (emacs-pi-input-text) "hello  "))
+            (goto-char (+ begin 3))
+            (emacs-pi-ui-beginning-of-line)
+            (should (= (point) begin))
+            (goto-char (1- begin))
+            (emacs-pi-ui-beginning-of-line)
+            (should (= (point) begin))
+            (emacs-pi-ui-focus-or-insert)
+            (should (equal (emacs-pi-input-text) "ihello  "))
+            (should (eq (overlay-get emacs-pi--input-background 'face)
+                        'emacs-pi-input-face))
+            (should (<= (overlay-start emacs-pi--input-background) begin))
+            (should (= (overlay-end emacs-pi--input-background)
+                       (point-max)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-process-fold-survives-redraw ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (user (emacs-pi--jobject "role" "user" "content" "Please inspect"))
+         (tool (emacs-pi--jobject "type" "toolCall" "id" "call-1"
+                                   "name" "read"
+                                   "arguments" (emacs-pi--jobject "path" "README.md")))
+         (step (emacs-pi--jobject "role" "assistant" "content" (vector tool)))
+         (reply (emacs-pi--jobject "role" "assistant"
+                                    "content" (vector (emacs-pi--jobject
+                                                       "type" "text" "text" "Done."))))
+         (tools (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session :root root :client-id "fold-123456"
+                                         :phase 'ready :messages (list user step reply)
+                                         :tools tools))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (puthash "call-1"
+                   (emacs-pi--jobject
+                    "type" "tool_execution_end" "isError" :false
+                    "result" (emacs-pi--jobject
+                              "content" (vector (emacs-pi--jobject
+                                                 "type" "text" "text" "file body"))))
+                   tools)
+          (emacs-pi-input-set "unsent draft")
+          (emacs-pi-ui-render session)
+          (goto-char (point-min))
+          (should (search-forward "Process · 1 step" nil t))
+          (should (search-forward "Done." nil t))
+          (goto-char (point-min))
+          (search-forward "Process")
+          (let* ((header (emacs-pi-ui--process-at-point))
+                 (body (overlay-get header 'emacs-pi-process)))
+            (should (eq (overlay-get body 'invisible) 'emacs-pi-process))
+            (emacs-pi-ui-toggle-process)
+            (should-not (overlay-get body 'invisible))
+            (goto-char (point-min))
+            (search-forward "✓ read")
+            (let* ((tool-header (emacs-pi-ui--process-at-point))
+                   (tool-body (overlay-get tool-header 'emacs-pi-process)))
+              (should (eq (overlay-get tool-body 'invisible)
+                          'emacs-pi-process))
+              (emacs-pi-ui-toggle-process)
+              (should-not (overlay-get tool-body 'invisible)))
+            (emacs-pi-ui-render session)
+            (goto-char (point-min))
+            (search-forward "Process")
+            (setq header (emacs-pi-ui--process-at-point)
+                  body (overlay-get header 'emacs-pi-process))
+            (should-not (overlay-get body 'invisible))
+            (should (equal (emacs-pi-input-text) "unsent draft"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-context-header-and-mode-line-state ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (usage (emacs-pi--jobject "tokens" 6200 "contextWindow" 128000))
+         (model (emacs-pi--jobject "provider" "test" "id" "model"))
+         (session (make-emacs-pi-session :root root :client-id "state-123456"
+                                         :phase 'ready :model model
+                                         :thinking "high" :context-usage usage))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (should (string-match-p "6.2k/128.0k" (emacs-pi-ui--header)))
+          (should (equal (emacs-pi-ui--format-tokens 1000000) "1.0M"))
+          (should (string-match-p "Pi idle" (emacs-pi-ui--state)))
+          (setf (emacs-pi-session-running session) t
+                (emacs-pi-session-active-tool session) "read")
+          (should (string-match-p "Pi tool: read" (emacs-pi-ui--state)))
+          (emacs-pi-ui-schedule session nil)
+          (should emacs-pi--spinner-timer)
+          (setf (emacs-pi-session-running session) nil)
+          (emacs-pi-ui-schedule session nil)
+          (should-not emacs-pi--spinner-timer)
+          (setf (emacs-pi-session-context-usage session)
+                (emacs-pi--jobject "tokens" :null "contextWindow" 128000))
+          (should (string-match-p "context: —" (emacs-pi-ui--header))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-root-picker-offers-existing-and-new ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (record (list :id "1234567890abcdefghijkl" :cwd root
+                       :modified (current-time) :preview "First prompt"))
+         (choice nil)
+         (opened nil)
+         (resumed nil)
+         (pick-new t))
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-pi-history-list)
+                   (lambda (&optional _root) (list record)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt choices &rest _args)
+                     (setq choice choices)
+                     (if pick-new "[New session]" (caar choices))))
+                  ((symbol-function 'emacs-pi--open)
+                   (lambda (directory &optional _file)
+                     (setq opened directory)))
+                  ((symbol-function 'emacs-pi--resume-record)
+                   (lambda (entry) (setq resumed entry))))
+          (emacs-pi-chat root)
+          (should (equal opened (emacs-pi--local-root root)))
+          (should (= (length choice) 2))
+          (should (string-match-p "First prompt" (caar choice)))
+          (should (string-match-p "1234567890ab" (caar choice)))
+          (should (string-suffix-p "project"
+                                   (emacs-pi--middle-truncate
+                                    "~/very/long/nested/directory/name/project" 20)))
+          (setq pick-new nil)
+          (emacs-pi-chat root)
+          (should (eq resumed record)))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-history-preview-uses-latest-name ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (file (expand-file-name "session.jsonl" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (dolist (entry
+                     (list (emacs-pi--jobject "type" "session" "id" "history-id"
+                                              "cwd" root "timestamp" "2026-09-29T00:00:00Z")
+                           (emacs-pi--jobject
+                            "type" "message" "message"
+                            (emacs-pi--jobject "role" "user" "content" "First prompt"))
+                           (emacs-pi--jobject "type" "session_info" "name" "Old name")
+                           (emacs-pi--jobject "type" "session_info" "name" "New name")
+                           (emacs-pi--jobject
+                            "type" "message" "message"
+                            (emacs-pi--jobject "role" "user" "content" "Latest prompt"))))
+              (insert (emacs-pi--jencode entry) "\n")))
+          (let ((record (emacs-pi-history--record file)))
+            (should (equal (plist-get record :name) "New name"))
+            (should (equal (plist-get record :preview) "First prompt"))
+            (should (equal (plist-get record :last-preview) "Latest prompt"))
+            (should (= (plist-get record :message-count) 2))))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-history-restores-tool-result-details ()
+  (let* ((message (emacs-pi--jobject
+                   "role" "toolResult" "toolCallId" "call-1"
+                   "isError" :false
+                   "content" (vector (emacs-pi--jobject
+                                      "type" "text" "text" "result body"))))
+         (tools (emacs-pi-session--tools-from-messages (list message)))
+         (state (gethash "call-1" tools)))
+    (should (equal (emacs-pi--jget state "type") "tool_execution_end"))
+    (should (equal (emacs-pi-ui--tool-result-text state) "result body"))))
 
 (provide 'emacs-pi-test)
 ;;; emacs-pi-test.el ends here

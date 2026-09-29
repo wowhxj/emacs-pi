@@ -13,7 +13,7 @@
 (cl-defstruct emacs-pi-session
   client-id generation root buffer connection session-id session-file name
   phase running compacting waiting model thinking messages active-message
-  tools steering follow-up queue-known last-prompt error
+  tools active-tool context-usage steering follow-up queue-known last-prompt error
   commands executable arguments environment on-change on-extension)
 
 (defun emacs-pi-session--changed (session kind &optional data)
@@ -35,6 +35,21 @@
                             (emacs-pi--jget entry "message")))
                         (plist-get branch :entries))))))
 
+(defun emacs-pi-session--tools-from-messages (messages)
+  "Build completed tool states from persisted MESSAGES."
+  (let ((tools (make-hash-table :test #'equal)))
+    (dolist (message messages)
+      (when (equal (emacs-pi--jget message "role") "toolResult")
+        (when-let* ((id (emacs-pi--jget message "toolCallId")))
+          (puthash id
+                   (emacs-pi--jobject
+                    "type" "tool_execution_end"
+                    "isError" (emacs-pi--jget message "isError")
+                    "result" (emacs-pi--jobject
+                              "content" (emacs-pi--jget message "content")))
+                   tools))))
+    tools))
+
 (defun emacs-pi-session--refresh-history (session &optional callback)
   "Reload active branch for SESSION, then call CALLBACK."
   (let ((generation (emacs-pi-session-generation session)))
@@ -46,9 +61,23 @@
            (let ((messages (emacs-pi-session--messages-from-entries
                             (plist-get result :data))))
              (when (listp messages)
-               (setf (emacs-pi-session-messages session) messages)
+               (setf (emacs-pi-session-messages session) messages
+                     (emacs-pi-session-tools session)
+                     (emacs-pi-session--tools-from-messages messages))
                (emacs-pi-session--changed session 'history))))
          (when callback (funcall callback result)))))))
+
+(defun emacs-pi-session-refresh-stats (session)
+  "Refresh SESSION's current context usage from Pi."
+  (let ((generation (emacs-pi-session-generation session)))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "get_session_stats" nil
+     (lambda (result)
+       (when (and (= generation (emacs-pi-session-generation session))
+                  (plist-get result :ok))
+         (setf (emacs-pi-session-context-usage session)
+               (emacs-pi--jget (plist-get result :data) "contextUsage"))
+         (emacs-pi-session--changed session 'status))))))
 
 (defun emacs-pi-session--start (session)
   "Start or restart the Pi process for SESSION."
@@ -102,6 +131,7 @@
                 (if (plist-get history-result :ok)
                     (progn
                       (setf (emacs-pi-session-phase session) 'ready)
+                      (emacs-pi-session-refresh-stats session)
                       (emacs-pi-rpc-request
                        conn "get_commands" nil
                        (lambda (commands-result)
@@ -140,9 +170,11 @@
        (emacs-pi-session--changed session 'status))
       ("agent_settled"
        (setf (emacs-pi-session-running session) nil
-             (emacs-pi-session-compacting session) nil)
+             (emacs-pi-session-compacting session) nil
+             (emacs-pi-session-active-tool session) nil)
        (emacs-pi-session--changed session 'status)
-       (emacs-pi-session--refresh-history session))
+       (emacs-pi-session--refresh-history session)
+       (emacs-pi-session-refresh-stats session))
       ("message_start"
        (when (equal (emacs-pi--jget (emacs-pi--jget event "message") "role")
                     "assistant")
@@ -166,10 +198,13 @@
       ("tool_execution_start"
        (let ((id (emacs-pi--jget event "toolCallId")))
          (when id (puthash id event (emacs-pi-session-tools session))
+               (setf (emacs-pi-session-active-tool session)
+                     (emacs-pi--jget event "toolName"))
                (emacs-pi-session--changed session 'tool))))
       ("tool_execution_end"
        (let ((id (emacs-pi--jget event "toolCallId")))
          (when id (puthash id event (emacs-pi-session-tools session))
+               (setf (emacs-pi-session-active-tool session) nil)
                (emacs-pi-session--changed session 'tool))))
       ("queue_update"
        (setf (emacs-pi-session-steering session) (emacs-pi--jget event "steering")
@@ -181,7 +216,8 @@
        (emacs-pi-session--changed session 'status))
       ("compaction_end"
        (setf (emacs-pi-session-compacting session) nil)
-       (emacs-pi-session--changed session 'status))
+       (emacs-pi-session--changed session 'status)
+       (emacs-pi-session-refresh-stats session))
       ("thinking_level_changed"
        (setf (emacs-pi-session-thinking session) (emacs-pi--jget event "level"))
        (emacs-pi-session--changed session 'status))

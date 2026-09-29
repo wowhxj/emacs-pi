@@ -33,6 +33,9 @@ for raw in sys.stdin:
                               "description": "Fake extension command"}]}
     elif kind == "get_available_thinking_levels":
         data = {"levels": ["off"]}
+    elif kind == "get_session_stats":
+        data = {"contextUsage": {"tokens": 1200,
+                                  "contextWindow": 10000, "percent": 12}}
     elif kind in ("clear_queue", "abort"):
         data = {"steering": [], "followUp": []} if kind == "clear_queue" else {}
     elif kind == "prompt":

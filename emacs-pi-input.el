@@ -32,9 +32,10 @@
     (insert text)))
 
 (defun emacs-pi-focus-input ()
-  "Move point to the end of the Pi composer."
+  "Move point to the last non-whitespace character of the Pi composer."
   (interactive)
-  (goto-char (point-max)))
+  (goto-char (+ (emacs-pi-input-beginning)
+                (length (string-trim-right (emacs-pi-input-text))))))
 
 (defun emacs-pi-input--show-attachments ()
   "Update the pending image names shown above the composer."

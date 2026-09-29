@@ -14,6 +14,7 @@
 (declare-function emacs-pi-send "emacs-pi-input")
 (declare-function emacs-pi-steer "emacs-pi-input")
 (declare-function emacs-pi-focus-input "emacs-pi-input")
+(declare-function emacs-pi-input-beginning "emacs-pi-input")
 (declare-function emacs-pi-previous-prompt "emacs-pi-input")
 (declare-function emacs-pi-next-prompt "emacs-pi-input")
 (declare-function emacs-pi-stop "emacs-pi")
@@ -21,6 +22,7 @@
 (declare-function emacs-pi-switch-chat "emacs-pi")
 (declare-function emacs-pi-quit "emacs-pi")
 (declare-function emacs-pi-input-completion-at-point "emacs-pi-input")
+(defvar emacs-pi-show-thinking)
 
 (defface emacs-pi-user-face '((t :inherit font-lock-keyword-face :weight bold))
   "Face for user labels." :group 'emacs-pi)
@@ -28,10 +30,22 @@
   "Face for Pi labels." :group 'emacs-pi)
 (defface emacs-pi-tool-face '((t :inherit shadow))
   "Face for tool summaries." :group 'emacs-pi)
+(defface emacs-pi-input-face '((t :inherit widget-field :extend t))
+  "Background of the Pi composer." :group 'emacs-pi)
+(defface emacs-pi-status-face '((t :inherit mode-line))
+  "Face for Pi activity in the mode line." :group 'emacs-pi)
+
+(defvar emacs-pi-ui--process-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'emacs-pi-ui-toggle-process)
+    (define-key map (kbd "TAB") #'emacs-pi-ui-toggle-process)
+    (define-key map [mouse-1] #'emacs-pi-ui-toggle-process)
+    map)
+  "Keys on an intermediate-process heading.")
 
 (defvar emacs-pi-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'emacs-pi-send)
+    (define-key map (kbd "RET") #'emacs-pi-ui-return)
     (define-key map (kbd "C-c C-c") #'emacs-pi-send)
     (define-key map (kbd "S-<return>") #'newline)
     (define-key map (kbd "S-RET") #'newline)
@@ -43,13 +57,21 @@
     (define-key map (kbd "C-c C-q") #'emacs-pi-quit)
     (define-key map (kbd "M-p") #'emacs-pi-previous-prompt)
     (define-key map (kbd "M-n") #'emacs-pi-next-prompt)
-    (define-key map (kbd "TAB") #'completion-at-point)
+    (define-key map (kbd "TAB") #'emacs-pi-ui-tab)
+    (define-key map (kbd "i") #'emacs-pi-ui-focus-or-insert)
+    (define-key map (kbd "C-a") #'emacs-pi-ui-beginning-of-line)
     map)
   "Local keys for the Pi chat buffer.")
 
 (defvar-local emacs-pi--session nil)
 (defvar-local emacs-pi--input-marker nil)
 (defvar-local emacs-pi--render-timer nil)
+(defvar-local emacs-pi--spinner-timer nil)
+(defvar-local emacs-pi--spinner-index 0)
+(defvar-local emacs-pi--input-background nil)
+(defvar-local emacs-pi--process-overlays nil)
+(defvar-local emacs-pi--fold-expanded nil)
+(defvar-local emacs-pi--detail-index 0)
 (defvar-local emacs-pi--draft-revision 0)
 (defvar-local emacs-pi--input-history nil)
 (defvar-local emacs-pi--history-index nil)
@@ -61,13 +83,98 @@
   "Major mode for chatting with the Pi agent."
   (setq-local truncate-lines nil)
   (setq-local buffer-read-only nil)
+  (setq-local buffer-invisibility-spec (copy-tree buffer-invisibility-spec))
+  (add-to-invisibility-spec 'emacs-pi-process)
+  (setq-local emacs-pi--fold-expanded (make-hash-table :test #'equal))
   (tab-line-mode 1)
   (setq-local tab-line-format '(:eval (emacs-pi-ui--header)))
   (setq-local header-line-format '(:eval (emacs-pi-ui--pinned)))
+  (setq-local mode-line-misc-info
+              (cons '(:eval (emacs-pi-ui--state)) mode-line-misc-info))
   (add-hook 'completion-at-point-functions
             #'emacs-pi-input-completion-at-point nil t)
   (add-hook 'after-change-functions #'emacs-pi-ui--changed nil t)
   (add-hook 'kill-buffer-hook #'emacs-pi-ui--cleanup nil t))
+
+(defun emacs-pi-ui-focus-or-insert ()
+  "Jump to the composer from history; insert i inside the composer."
+  (interactive)
+  (if (< (point) (emacs-pi-input-beginning))
+      (emacs-pi-focus-input)
+    (let ((last-command-event ?i))
+      (self-insert-command 1))))
+
+(defun emacs-pi-ui-beginning-of-line ()
+  "Move to line start without entering the protected composer prompt."
+  (interactive)
+  (let ((composer-line
+         (save-excursion
+           (goto-char (emacs-pi-input-beginning))
+           (line-beginning-position))))
+    (move-beginning-of-line 1)
+    (when (= (point) composer-line)
+      (goto-char (emacs-pi-input-beginning)))))
+
+(defun emacs-pi-ui--process-at-point ()
+  "Return the process-heading overlay at point, if any."
+  (or (cl-find-if (lambda (overlay) (overlay-get overlay 'emacs-pi-process))
+                  (overlays-at (point)))
+      (when (and (> (point) (point-min))
+                 (not (eq (char-before) ?\n)))
+        (cl-find-if (lambda (overlay) (overlay-get overlay 'emacs-pi-process))
+                    (overlays-at (1- (point)))))))
+
+(defun emacs-pi-ui-return ()
+  "Toggle a process heading or send the composer draft."
+  (interactive)
+  (if (emacs-pi-ui--process-at-point)
+      (emacs-pi-ui-toggle-process)
+    (emacs-pi-send)))
+
+(defun emacs-pi-ui-tab ()
+  "Toggle a process heading or complete composer text."
+  (interactive)
+  (if (emacs-pi-ui--process-at-point)
+      (emacs-pi-ui-toggle-process)
+    (completion-at-point)))
+
+(defun emacs-pi-ui--state ()
+  "Return Pi's current activity for the ordinary mode line."
+  (when emacs-pi--session
+    (let* ((session emacs-pi--session)
+           (running (emacs-pi-session-running session))
+           (tool (emacs-pi-session-active-tool session))
+           (phase (emacs-pi-session-phase session)))
+      (propertize
+       (format " Pi %s%s"
+               (cond ((eq phase 'dead) "disconnected")
+                     ((not (eq phase 'ready)) "connecting")
+                     ((emacs-pi-session-compacting session) "compacting")
+                     (tool (format "tool: %s" tool))
+                     (running "thinking")
+                     (t "idle"))
+               (if running
+                   (format " %c" (aref "|/-\\" (mod emacs-pi--spinner-index 4)))
+                 ""))
+       'face 'emacs-pi-status-face))))
+
+(defun emacs-pi-ui--sync-spinner ()
+  "Run the mode-line spinner only while Pi is active."
+  (if (and emacs-pi--session
+           (emacs-pi-session-running emacs-pi--session))
+      (unless emacs-pi--spinner-timer
+        (let ((buffer (current-buffer)))
+          (setq emacs-pi--spinner-timer
+                (run-at-time 0.15 0.15
+                             (lambda ()
+                               (when (buffer-live-p buffer)
+                                 (with-current-buffer buffer
+                                   (cl-incf emacs-pi--spinner-index)
+                                   (force-mode-line-update t))))))))
+    (when emacs-pi--spinner-timer
+      (cancel-timer emacs-pi--spinner-timer)
+      (setq emacs-pi--spinner-timer nil)))
+  (force-mode-line-update t))
 
 (defun emacs-pi-ui--changed (begin _end _old-length)
   "Track input edits beginning at BEGIN."
@@ -76,23 +183,37 @@
                           (length emacs-pi--composer-prefix))))
     (cl-incf emacs-pi--draft-revision)))
 
+(defun emacs-pi-ui--format-tokens (value)
+  "Format token VALUE compactly for the status line."
+  (cond ((>= value 1000000) (format "%.1fM" (/ value 1000000.0)))
+        ((>= value 1000) (format "%.1fk" (/ value 1000.0)))
+        (t (number-to-string value))))
+
 (defun emacs-pi-ui--header ()
-  "Return one-line Pi state for the tab line."
+  "Return Pi context usage and model for the tab line."
   (let ((session emacs-pi--session))
     (when session
       (let* ((model (emacs-pi-session-model session))
              (provider (emacs-pi--jget model "provider"))
              (id (emacs-pi--jget model "id"))
-             (phase (emacs-pi-session-phase session))
-             (state (cond ((eq phase 'dead) "disconnected")
-                          ((not (eq phase 'ready)) "connecting")
-                          ((emacs-pi-session-compacting session) "compacting")
-                          ((emacs-pi-session-running session) "working")
-                          (t "idle"))))
-        (format " Pi: %s  ·  %s  ·  %s"
-                state (if (and provider id) (format "%s/%s" provider id)
-                        "model pending")
-                (or (emacs-pi-session-thinking session) "thinking pending"))))))
+             (usage (emacs-pi-session-context-usage session))
+             (tokens (emacs-pi--jget usage "tokens"))
+             (window (emacs-pi--jget usage "contextWindow"))
+             (left (if (and (numberp tokens) (numberp window))
+                       (format "%s/%s"
+                               (emacs-pi-ui--format-tokens tokens)
+                               (emacs-pi-ui--format-tokens window))
+                     "context: —"))
+             (right (format "%s · %s"
+                            (if (and provider id)
+                                (format "(%s) %s" provider id)
+                              "model pending")
+                            (or (emacs-pi-session-thinking session)
+                                "thinking pending"))))
+        (concat " " left " "
+                (propertize " " 'display
+                            `(space :align-to (- right ,(string-width right))))
+                (replace-regexp-in-string "%" "%%" right))))))
 
 (defun emacs-pi-ui--pinned ()
   "Return the latest sent user prompt for the header line."
@@ -116,8 +237,28 @@
   "Insert LABEL with FACE."
   (insert (propertize label 'face face 'read-only t)))
 
-(defun emacs-pi-ui--insert-blocks (message session)
-  "Insert displayable content from MESSAGE using SESSION tool state."
+(defun emacs-pi-ui--insert-detail (label detail key)
+  "Insert a collapsed step LABEL with expandable DETAIL under KEY."
+  (insert "  ")
+  (let ((start (point)))
+    (insert "▸ " label "\n")
+    (let ((body-start (point)))
+      (insert (or detail "") "\n")
+      (emacs-pi-ui--fold-process start body-start (point) key label))))
+
+(defun emacs-pi-ui--tool-result-text (state)
+  "Return a bounded readable result from tool execution STATE."
+  (let* ((result (emacs-pi--jget state "result"))
+         (blocks (emacs-pi--array-list (emacs-pi--jget result "content")))
+         (texts (delq nil
+                      (mapcar (lambda (block)
+                                (emacs-pi--jget block "text")) blocks)))
+         (content (string-join texts "\n")))
+    (unless (string-empty-p content)
+      (truncate-string-to-width content 4000 nil nil "…"))))
+
+(defun emacs-pi-ui--insert-blocks (message session &optional final-only)
+  "Insert MESSAGE content; FINAL-ONLY skips intermediate steps."
   (let ((content (emacs-pi--jget message "content")))
     (cond
      ((stringp content) (insert (emacs-pi-ui--markdown content)))
@@ -127,44 +268,171 @@
           ("text" (insert (emacs-pi-ui--markdown
                             (or (emacs-pi--jget block "text") ""))))
           ("thinking"
-           (when (and (boundp 'emacs-pi-show-thinking) emacs-pi-show-thinking)
-             (insert (propertize
-                      (format "\n  ✻ Thinking: %s\n"
-                              (truncate-string-to-width
-                               (or (emacs-pi--jget block "thinking") "")
-                               120 nil nil "…"))
-                      'face 'shadow))))
+           (when (and (not final-only)
+                      (boundp 'emacs-pi-show-thinking) emacs-pi-show-thinking)
+             (let* ((thought (or (emacs-pi--jget block "thinking") ""))
+                    (summary (truncate-string-to-width
+                              (replace-regexp-in-string "[\r\n]+" " " thought)
+                              100 nil nil "…")))
+               (emacs-pi-ui--insert-detail
+                (concat "✻ Thinking: " summary) thought
+                (format "thinking:%d" (cl-incf emacs-pi--detail-index))))))
           ("toolCall"
-           (let* ((id (emacs-pi--jget block "id"))
+           (unless final-only
+             (let* ((id (emacs-pi--jget block "id"))
                   (name (or (emacs-pi--jget block "name") "tool"))
                   (state (and id (gethash id (emacs-pi-session-tools session))))
                   (done (equal (emacs-pi--jget state "type")
                                "tool_execution_end"))
                   (failed (emacs-pi--jtrue-p
-                           (emacs-pi--jget state "isError"))))
-             (insert (propertize
-                      (format "\n  %s %s\n" (if done (if failed "✗" "✓") "●") name)
-                      'face 'emacs-pi-tool-face))))
+                           (emacs-pi--jget state "isError")))
+                  (arguments (emacs-pi--jget block "arguments"))
+                  (result (emacs-pi-ui--tool-result-text state))
+                  (detail (concat
+                           (when arguments
+                             (format "Arguments: %s\n"
+                                     (truncate-string-to-width
+                                      (emacs-pi--jencode arguments)
+                                      4000 nil nil "…")))
+                           (when result (format "Result:\n%s\n" result)))))
+               (emacs-pi-ui--insert-detail
+                (format "%s %s" (if done (if failed "✗" "✓") "●") name)
+                detail
+                (format "tool:%s" (or id (cl-incf emacs-pi--detail-index)))))))
           ("image" (insert "[image]"))
           (_ nil)))))))
 
+(defun emacs-pi-ui--content-types (message)
+  "Return the block type strings in MESSAGE."
+  (let ((content (emacs-pi--jget message "content")))
+    (when (vectorp content)
+      (mapcar (lambda (block) (emacs-pi--jget block "type"))
+              (append content nil)))))
+
+(defun emacs-pi-ui--final-p (message)
+  "Whether MESSAGE has answer text without a tool call."
+  (let ((content (emacs-pi--jget message "content")))
+    (or (and (stringp content) (not (string-empty-p content)))
+        (and (member "text" (emacs-pi-ui--content-types message))
+             (not (member "toolCall" (emacs-pi-ui--content-types message)))))))
+
+(defun emacs-pi-ui--thinking-blocks (message)
+  "Return MESSAGE's thinking blocks."
+  (let ((content (emacs-pi--jget message "content")))
+    (when (vectorp content)
+      (cl-remove-if-not
+       (lambda (block) (equal (emacs-pi--jget block "type") "thinking"))
+       (append content nil)))))
+
+(defun emacs-pi-ui--step-count (message)
+  "Count visible thinking and tool steps in MESSAGE."
+  (let* ((types (emacs-pi-ui--content-types message))
+         (special (cl-count-if
+                   (lambda (type)
+                     (or (equal type "toolCall")
+                         (and emacs-pi-show-thinking
+                              (equal type "thinking"))))
+                   types)))
+    (max 1 special)))
+
+(defun emacs-pi-ui--process-heading (label expanded)
+  "Return a process heading for LABEL, shown EXPANDED or collapsed."
+  (propertize (concat (if expanded "▾ " "▸ ") label
+                      (unless expanded "\n"))
+              'face 'shadow))
+
+(defun emacs-pi-ui--fold-process (start body-start end key label)
+  "Fold process text START..END, where BODY-START begins its details."
+  (let* ((expanded (gethash key emacs-pi--fold-expanded))
+         (header (make-overlay start (1- body-start) nil t nil))
+         (body (make-overlay (1- body-start) end nil nil nil)))
+    (overlay-put header 'display (emacs-pi-ui--process-heading label expanded))
+    (overlay-put header 'emacs-pi-process body)
+    (overlay-put header 'emacs-pi-process-key key)
+    (overlay-put header 'emacs-pi-process-label label)
+    (overlay-put header 'keymap emacs-pi-ui--process-map)
+    (overlay-put header 'mouse-face 'highlight)
+    (overlay-put header 'help-echo "RET, TAB or click: toggle intermediate steps")
+    (overlay-put body 'invisible (unless expanded 'emacs-pi-process))
+    (push header emacs-pi--process-overlays)
+    (push body emacs-pi--process-overlays)))
+
+(defun emacs-pi-ui-toggle-process (&optional event)
+  "Show or hide intermediate Pi steps at point or mouse EVENT."
+  (interactive (list last-input-event))
+  (when (mouse-event-p event) (mouse-set-point event))
+  (let* ((header (emacs-pi-ui--process-at-point))
+         (body (and header (overlay-get header 'emacs-pi-process))))
+    (unless body (user-error "Move to a Pi process heading first"))
+    (let* ((key (overlay-get header 'emacs-pi-process-key))
+           (expanded (not (gethash key emacs-pi--fold-expanded))))
+      (puthash key expanded emacs-pi--fold-expanded)
+      (overlay-put body 'invisible (unless expanded 'emacs-pi-process))
+      (overlay-put header 'display
+                   (emacs-pi-ui--process-heading
+                    (overlay-get header 'emacs-pi-process-label) expanded)))))
+
+(defun emacs-pi-ui--turns (messages)
+  "Group MESSAGES by user turn."
+  (let (turn turns)
+    (dolist (message messages)
+      (when (and turn (equal (emacs-pi--jget message "role") "user"))
+        (push (nreverse turn) turns)
+        (setq turn nil))
+      (push message turn))
+    (when turn (push (nreverse turn) turns))
+    (nreverse turns)))
+
+(defun emacs-pi-ui--render-turn (turn session key)
+  "Render one TURN of SESSION, keeping its process fold under KEY."
+  (let* ((user (and (equal (emacs-pi--jget (car turn) "role") "user")
+                    (car turn)))
+         (responses (if user (cdr turn) turn))
+         (assistants (cl-remove-if-not
+                      (lambda (message)
+                        (equal (emacs-pi--jget message "role") "assistant"))
+                      responses))
+         (candidate (car (last assistants)))
+         (final (and candidate (emacs-pi-ui--final-p candidate) candidate))
+         (steps (if final (delq final (copy-sequence assistants)) assistants))
+         (thinking (and final emacs-pi-show-thinking
+                        (emacs-pi-ui--thinking-blocks final)))
+         (count (+ (apply #'+ (mapcar #'emacs-pi-ui--step-count steps))
+                   (length thinking))))
+    (when user
+      (emacs-pi-ui--insert-label "You: " 'emacs-pi-user-face)
+      (emacs-pi-ui--insert-blocks user session)
+      (insert "\n\n"))
+    (when (> count 0)
+      (let ((start (point))
+            (label (format "Process · %d step%s" count
+                           (if (= count 1) "" "s"))))
+        (insert "▸ " label "\n")
+        (let ((body-start (point)))
+          (dolist (message steps)
+            (emacs-pi-ui--insert-label "Pi step: " 'emacs-pi-tool-face)
+            (emacs-pi-ui--insert-blocks message session)
+            (insert "\n\n"))
+          (dolist (block thinking)
+            (let* ((thought (or (emacs-pi--jget block "thinking") ""))
+                   (summary (truncate-string-to-width
+                             (replace-regexp-in-string "[\r\n]+" " " thought)
+                             100 nil nil "…")))
+              (emacs-pi-ui--insert-detail
+               (concat "✻ Thinking: " summary) thought
+               (format "thinking:%d" (cl-incf emacs-pi--detail-index)))))
+          (emacs-pi-ui--fold-process start body-start (point) key label))))
+    (when final
+      (emacs-pi-ui--insert-label "Pi: " 'emacs-pi-assistant-face)
+      (emacs-pi-ui--insert-blocks final session t)
+      (insert "\n\n"))))
+
 (defun emacs-pi-ui--transcript (session)
   "Insert SESSION transcript into current buffer."
-  (dolist (message (emacs-pi-session-messages session))
-    (let ((role (emacs-pi--jget message "role")))
-      (pcase role
-        ("user"
-         (emacs-pi-ui--insert-label "You: " 'emacs-pi-user-face)
-         (emacs-pi-ui--insert-blocks message session)
-         (insert "\n\n"))
-        ("assistant"
-         (let ((content (emacs-pi--jget message "content")))
-           (when (or (stringp content) (and (vectorp content) (> (length content) 0)))
-             (emacs-pi-ui--insert-label "Pi: " 'emacs-pi-assistant-face)
-             (emacs-pi-ui--insert-blocks message session)
-             (insert "\n\n"))))
-        ("toolResult" nil)
-        (_ nil))))
+  (cl-loop for turn in (emacs-pi-ui--turns
+                        (emacs-pi-session-messages session))
+           for key from 0
+           do (emacs-pi-ui--render-turn turn session key))
   (when-let* ((stream (emacs-pi-session-active-message session)))
     (emacs-pi-ui--insert-label "Pi: " 'emacs-pi-assistant-face)
     (insert stream (propertize " ▍\n" 'face 'shadow)))
@@ -180,6 +448,9 @@
                (at-end (>= (point) (max (point-min) (- (point-max) 2))))
                (start (marker-position emacs-pi--input-marker))
                (buffer-undo-list t))
+          (mapc #'delete-overlay emacs-pi--process-overlays)
+          (setq emacs-pi--process-overlays nil)
+          (setq emacs-pi--detail-index 0)
           (save-excursion
             (delete-region (point-min) start)
             (goto-char (point-min))
@@ -187,6 +458,10 @@
             (add-text-properties (point-min)
                                  (marker-position emacs-pi--input-marker)
                                  '(read-only t rear-nonsticky (read-only))))
+          (when emacs-pi--input-background
+            (move-overlay emacs-pi--input-background
+                          (1+ (marker-position emacs-pi--input-marker))
+                          (point-max)))
           (when at-end (goto-char (point-max)))
           (force-mode-line-update t))))))
 
@@ -195,6 +470,7 @@
   (when-let* ((buffer (emacs-pi-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        (emacs-pi-ui--sync-spinner)
         (unless emacs-pi--render-timer
           (setq emacs-pi--render-timer
                 (run-at-time 0.05 nil
@@ -219,6 +495,10 @@
                           'read-only t 'rear-nonsticky '(read-only)))
       (setq-local emacs-pi--input-marker
                   (copy-marker (point-min) t))
+      (setq-local emacs-pi--input-background
+                  (make-overlay (1+ (marker-position emacs-pi--input-marker))
+                                (point-max) nil t t))
+      (overlay-put emacs-pi--input-background 'face 'emacs-pi-input-face)
       (goto-char (point-max)))
     (setf (emacs-pi-session-buffer session) buffer)
     buffer))
@@ -228,6 +508,9 @@
   (when emacs-pi--render-timer
     (cancel-timer emacs-pi--render-timer)
     (setq emacs-pi--render-timer nil))
+  (when emacs-pi--spinner-timer
+    (cancel-timer emacs-pi--spinner-timer)
+    (setq emacs-pi--spinner-timer nil))
   (when emacs-pi--session
     (emacs-pi-session-shutdown emacs-pi--session)))
 
