@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.8
+;; Version: 0.2.9
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi

@@ -181,12 +181,10 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                                  (abbreviate-file-name file))
                                 (external file)
                                 (t (file-relative-name file root))))
-                    (reference (concat path (if directory-p "/" ""))))
+               (reference (concat path (if directory-p "/" ""))))
                (unless (gethash reference seen)
                  (puthash reference t seen)
-                 (cons (format "%s  [%s]" reference
-                               (if directory-p "directory" "file"))
-                       (emacs-pi-input--file-mention reference)))))
+                 (cons reference (emacs-pi-input--file-mention reference)))))
            (sort paths #'string-lessp)))))
 
 (defun emacs-pi-input--session-mention (record)
@@ -264,17 +262,45 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
              (start (copy-marker (plist-get context :start)))
              (end (copy-marker (plist-get context :end) t))
              (original (plist-get context :original))
-             (query (plist-get context :query)))
+             (query (plist-get context :query))
+             (root (and (eq kind 'reference)
+                        (emacs-pi-session-root emacs-pi--session)))
+             (choice-values (make-hash-table :test #'equal))
+             (collection
+              (if (eq kind 'reference)
+                  (completion-table-dynamic
+                   (lambda (input)
+                     (let ((current-choices
+                            (append (emacs-pi-input--file-choices input)
+                                    (emacs-pi-input--session-choices))))
+                       (dolist (choice current-choices)
+                         (puthash (car choice) (cdr choice) choice-values))
+                       current-choices))
+                   t)
+                choices))
+             (completion-extra-properties
+              (when (eq kind 'reference)
+                (list
+                 :annotation-function
+                 (lambda (candidate)
+                   (unless (string-suffix-p "[session]" candidate)
+                     (let ((file (expand-file-name
+                                  candidate root)))
+                       (format "  [%s]"
+                               (if (file-directory-p file)
+                                   "directory" "file"))))))))
+             (completion-styles
+              (if (memq 'substring completion-styles)
+                  completion-styles
+                (append completion-styles '(substring)))))
         (unwind-protect
-            (let* ((completion-styles
-                    (if (memq 'substring completion-styles)
-                        completion-styles
-                      (append completion-styles '(substring))))
-                   (selected (completing-read
+            (let* ((selected (completing-read
                               (if (eq kind 'slash) "Pi command: "
                                 "Pi @ reference: ")
-                              choices nil t query))
-                   (replacement (cdr (assoc selected choices))))
+                              collection nil t query))
+                   (replacement (if (eq kind 'reference)
+                                   (gethash selected choice-values)
+                                 (cdr (assoc selected choices)))))
               (when (and replacement (buffer-live-p buffer))
                 (with-current-buffer buffer
                   (if (equal (buffer-substring-no-properties start end)
