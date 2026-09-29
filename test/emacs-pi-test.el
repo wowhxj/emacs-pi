@@ -296,6 +296,63 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-process-opens-during-run-and-closes-on-settle ()
+  (let* ((root (make-temp-file "emacs-pi-running-fold-" t))
+         (tool (emacs-pi--jobject "type" "toolCall" "id" "running-call"
+                                  "name" "read"))
+         (session (make-emacs-pi-session
+                   :root root :client-id "running-fold-123456" :phase 'ready
+                   :running t :tools (make-hash-table :test #'equal)
+                   :messages (list
+                              (emacs-pi--jobject "role" "user"
+                                                 "content" "Inspect")
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" (vector tool)))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-labels ((body (key)
+                        (overlay-get
+                         (cl-find-if
+                          (lambda (overlay)
+                            (equal (overlay-get overlay 'emacs-pi-process-key)
+                                   key))
+                          emacs-pi--process-overlays)
+                         'emacs-pi-process))
+                      (toggle (key)
+                        (goto-char
+                         (overlay-start
+                          (cl-find-if
+                           (lambda (overlay)
+                             (equal (overlay-get overlay 'emacs-pi-process-key)
+                                    key))
+                           emacs-pi--process-overlays)))
+                        (emacs-pi-ui-toggle-process)))
+            (emacs-pi-ui-render session)
+            (should-not (overlay-get (body 0) 'invisible))
+            (should (eq (overlay-get (body "tool:running-call") 'invisible)
+                        'emacs-pi-process))
+            (toggle 0)
+            (emacs-pi-ui-render session)
+            (should (eq (overlay-get (body 0) 'invisible)
+                        'emacs-pi-process))
+            (toggle 0)
+            (toggle "tool:running-call")
+            (emacs-pi-ui-render session)
+            (should-not (overlay-get (body "tool:running-call") 'invisible))
+            (setf (emacs-pi-session-running session) nil)
+            (emacs-pi-ui-schedule session nil)
+            (emacs-pi-ui-render session)
+            (should (eq (overlay-get (body 0) 'invisible)
+                        'emacs-pi-process))
+            (should (eq (overlay-get (body "tool:running-call") 'invisible)
+                        'emacs-pi-process))
+            (toggle 0)
+            (emacs-pi-ui-render session)
+            (should-not (overlay-get (body 0) 'invisible))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-process-steps-have-no-blank-lines ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (tool-one (emacs-pi--jobject "type" "toolCall" "id" "one"

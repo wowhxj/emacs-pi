@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6 — 2026-09-29
+
+- Pi 运行时自动展开当前回合的顶层 Process，工具和 thinking 详情保持折叠；手动切换可跨流式重绘保留，任务结束后全部收起。
+
 ## 0.2.5 — 2026-09-29
 
 - `@` 文件、目录和已保存 session，以及 `/` 命令改用 minibuffer 选择；兼容 Vertico/Orderless 和 Emacs 原生补全。

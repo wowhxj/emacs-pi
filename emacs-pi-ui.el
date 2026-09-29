@@ -78,6 +78,7 @@
 (defvar-local emacs-pi--user-overlays nil)
 (defvar-local emacs-pi--process-overlays nil)
 (defvar-local emacs-pi--fold-expanded nil)
+(defvar-local emacs-pi--fold-was-running nil)
 (defvar-local emacs-pi--detail-index 0)
 (defvar-local emacs-pi--draft-revision 0)
 (defvar-local emacs-pi--input-history nil)
@@ -376,9 +377,12 @@
                       (unless expanded "\n"))
               'face 'shadow))
 
-(defun emacs-pi-ui--fold-process (start body-start end key label)
-  "Fold process text START..END, where BODY-START begins its details."
-  (let* ((expanded (gethash key emacs-pi--fold-expanded))
+(defun emacs-pi-ui--fold-process (start body-start end key label
+                                      &optional default-expanded)
+  "Fold process text START..END, where BODY-START begins its details.
+DEFAULT-EXPANDED applies until the user toggles this process."
+  (let* ((stored (gethash key emacs-pi--fold-expanded 'unset))
+         (expanded (if (eq stored 'unset) default-expanded (eq stored t)))
          (header (make-overlay start (1- body-start) nil t nil))
          (body (make-overlay (1- body-start) end nil nil nil)))
     (overlay-put header 'display (emacs-pi-ui--process-heading label expanded))
@@ -400,8 +404,8 @@
          (body (and header (overlay-get header 'emacs-pi-process))))
     (unless body (user-error "Move to a Pi process heading first"))
     (let* ((key (overlay-get header 'emacs-pi-process-key))
-           (expanded (not (gethash key emacs-pi--fold-expanded))))
-      (puthash key expanded emacs-pi--fold-expanded)
+           (expanded (overlay-get body 'invisible)))
+      (puthash key (if expanded t 'collapsed) emacs-pi--fold-expanded)
       (overlay-put body 'invisible (unless expanded 'emacs-pi-process))
       (overlay-put header 'display
                    (emacs-pi-ui--process-heading
@@ -418,8 +422,9 @@
     (when turn (push (nreverse turn) turns))
     (nreverse turns)))
 
-(defun emacs-pi-ui--render-turn (turn session key)
-  "Render one TURN of SESSION, keeping its process fold under KEY."
+(defun emacs-pi-ui--render-turn (turn session key active-p)
+  "Render one TURN of SESSION, keeping its process fold under KEY.
+ACTIVE-P means this is the turn currently being processed by Pi."
   (let* ((user (and (equal (emacs-pi--jget (car turn) "role") "user")
                     (car turn)))
          (responses (if user (cdr turn) turn))
@@ -462,7 +467,8 @@
               (emacs-pi-ui--insert-detail
                (concat "✻ Thinking: " summary) thought
                (format "thinking:%d" (cl-incf emacs-pi--detail-index)))))
-          (emacs-pi-ui--fold-process start body-start (point) key label))))
+          (emacs-pi-ui--fold-process start body-start (point) key label
+                                     (and active-p (not final))))))
     (when final
       (emacs-pi-ui--insert-label "Pi: " 'emacs-pi-assistant-face)
       (emacs-pi-ui--insert-blocks final session t)
@@ -470,21 +476,33 @@
 
 (defun emacs-pi-ui--transcript (session)
   "Insert SESSION transcript into current buffer."
-  (cl-loop for turn in (emacs-pi-ui--turns
-                        (emacs-pi-session-messages session))
-           for key from 0
-           do (emacs-pi-ui--render-turn turn session key))
+  (let* ((turns (emacs-pi-ui--turns (emacs-pi-session-messages session)))
+         (active-key (1- (length turns))))
+    (cl-loop for turn in turns
+             for key from 0
+             do (emacs-pi-ui--render-turn
+                 turn session key
+                 (and (emacs-pi-session-running session)
+                      (= key active-key)))))
   (when-let* ((stream (emacs-pi-session-active-message session)))
     (emacs-pi-ui--insert-label "Pi: " 'emacs-pi-assistant-face)
     (insert stream (propertize " ▍\n" 'face 'shadow)))
   (when-let* ((error (emacs-pi-session-error session)))
     (insert (propertize (format "[Pi: %s]\n" error) 'face 'error))))
 
+(defun emacs-pi-ui--sync-fold-state (session)
+  "Reset process and step folds when SESSION starts or finishes a run."
+  (let ((running (emacs-pi-session-running session)))
+    (unless (eq running emacs-pi--fold-was-running)
+      (clrhash emacs-pi--fold-expanded)
+      (setq emacs-pi--fold-was-running running))))
+
 (defun emacs-pi-ui-render (session)
   "Refresh transcript for SESSION while retaining the composer."
   (when-let* ((buffer (emacs-pi-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        (emacs-pi-ui--sync-fold-state session)
         (let* ((inhibit-read-only t)
                (at-end (>= (point) (max (point-min) (- (point-max) 2))))
                (start (marker-position emacs-pi--input-marker))
@@ -518,6 +536,7 @@
   (when-let* ((buffer (emacs-pi-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        (emacs-pi-ui--sync-fold-state session)
         (emacs-pi-ui--sync-spinner)
         (unless emacs-pi--render-timer
           (setq emacs-pi--render-timer
