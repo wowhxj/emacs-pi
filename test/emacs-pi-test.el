@@ -132,11 +132,73 @@
             (should (= (point) begin))
             (emacs-pi-ui-focus-or-insert)
             (should (equal (emacs-pi-input-text) "ihello  "))
-            (should (eq (overlay-get emacs-pi--input-background 'face)
-                        'emacs-pi-input-face))
+            (let ((face (overlay-get emacs-pi--input-background 'face)))
+              (should (equal (plist-get face :background)
+                             (or (face-foreground 'warning nil t)
+                                 "#d97706")))
+              (should (plist-get face :extend)))
             (should (<= (overlay-start emacs-pi--input-background) begin))
             (should (= (overlay-end emacs-pi--input-background)
                        (point-max)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-only-composer-is-editable ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (session (make-emacs-pi-session :root root :client-id "edit-123456"
+                                         :phase 'ready
+                                         :messages (list (emacs-pi--jobject
+                                                          "role" "user"
+                                                          "content" "Past prompt"))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (let ((original (buffer-string))
+                (begin (emacs-pi-input-beginning)))
+            (goto-char (point-min))
+            (should-error (insert "x"))
+            (goto-char (1- begin))
+            (should-error (insert "x"))
+            (should-error (delete-region (1- begin) begin))
+            (should (equal (buffer-string) original))
+            (goto-char begin)
+            (insert "new draft")
+            (should (equal (emacs-pi-input-text) "new draft"))
+            (emacs-pi-ui-render session)
+            (should (equal (emacs-pi-input-text) "new draft"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-pastes-clipboard-image-and-text ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (program (expand-file-name "fake-pngpaste" root))
+         (session (make-emacs-pi-session :root root :client-id "paste-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (progn
+          (with-temp-file program
+            (insert "#!/bin/sh\nprintf '\\211PNG\\r\\n\\032\\n' > \"$1\"\n"))
+          (set-file-modes program #o755)
+          (with-current-buffer buffer
+            (let ((emacs-pi-pngpaste-executable program))
+              (goto-char (point-min))
+              (emacs-pi-paste))
+            (should (= (length emacs-pi--attachments) 1))
+            (should (equal (emacs-pi--jget (car emacs-pi--attachments) "name")
+                           "clipboard.png"))
+            (should (equal (emacs-pi--jget (car emacs-pi--attachments) "mimeType")
+                           "image/png"))
+            (should (= (point) (emacs-pi-input-beginning)))
+            (should (string-empty-p (emacs-pi-input-text)))
+            (with-temp-file program (insert "#!/bin/sh\nexit 1\n"))
+            (let ((emacs-pi-pngpaste-executable program)
+                  (kill-ring '("plain text"))
+                  (kill-ring-yank-pointer nil)
+                  (interprogram-paste-function nil))
+              (emacs-pi-paste))
+            (should (equal (emacs-pi-input-text) "plain text"))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 

@@ -14,6 +14,11 @@
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
 
+(defcustom emacs-pi-pngpaste-executable "pngpaste"
+  "Program used to paste a macOS clipboard image as PNG.
+Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
+  :type 'string :group 'emacs-pi)
+
 (defun emacs-pi-input-beginning ()
   "Return the first editable position in the current Pi chat."
   (unless emacs-pi--input-marker (user-error "Not in an emacs-pi chat"))
@@ -54,8 +59,8 @@
                                            emacs-pi--attachments) ", "))
                           'face 'shadow)))))
 
-(defun emacs-pi-attach-image (file)
-  "Attach PNG or JPEG FILE to the next Pi prompt."
+(defun emacs-pi-attach-image (file &optional name)
+  "Attach PNG or JPEG FILE to the next Pi prompt, optionally named NAME."
   (interactive "fImage file: ")
   (unless (derived-mode-p 'emacs-pi-chat-mode)
     (user-error "Not in an emacs-pi chat"))
@@ -70,11 +75,38 @@
                      ((string-prefix-p (unibyte-string 255 216 255) data)
                       "image/jpeg"))))
     (unless mime (user-error "Only PNG and JPEG images are supported"))
-    (push (emacs-pi--jobject "type" "image" "name" (file-name-nondirectory file)
+    (push (emacs-pi--jobject "type" "image" "name"
+                             (or name (file-name-nondirectory file))
                              "mimeType" mime "data" (base64-encode-string data t))
           emacs-pi--attachments)
     (emacs-pi-input--show-attachments)
-    (message "Attached %s" (file-name-nondirectory file)))))
+    (message "Attached %s" (or name (file-name-nondirectory file))))))
+
+(defun emacs-pi-input--pngpaste-program ()
+  "Return a usable pngpaste program, including common GUI Emacs paths."
+  (or (executable-find emacs-pi-pngpaste-executable)
+      (cl-find-if #'file-executable-p
+                  '("/opt/homebrew/bin/pngpaste" "/usr/local/bin/pngpaste"))))
+
+(defun emacs-pi-paste ()
+  "Paste a clipboard image as an attachment, or paste ordinary text.
+On macOS, `pngpaste' converts the current clipboard image to PNG."
+  (interactive)
+  (unless (derived-mode-p 'emacs-pi-chat-mode)
+    (user-error "Not in an emacs-pi chat"))
+  (when (< (point) (emacs-pi-input-beginning))
+    (emacs-pi-focus-input))
+  (let ((program (emacs-pi-input--pngpaste-program)))
+    (if (not program)
+        (yank)
+      (let ((file (make-temp-file "emacs-pi-clipboard-" nil ".png")))
+        (unwind-protect
+            (if (and (equal (call-process program nil nil nil file) 0)
+                     (> (file-attribute-size (file-attributes file)) 0))
+                (emacs-pi-attach-image file "clipboard.png")
+              (yank))
+          (when (file-exists-p file)
+            (delete-file file)))))))
 
 (defun emacs-pi-input-completion-at-point ()
   "Complete a local @path or a client /command in the Pi composer."

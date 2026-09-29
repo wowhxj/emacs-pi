@@ -22,6 +22,7 @@
 (declare-function emacs-pi-switch-chat "emacs-pi")
 (declare-function emacs-pi-quit "emacs-pi")
 (declare-function emacs-pi-input-completion-at-point "emacs-pi-input")
+(declare-function emacs-pi-paste "emacs-pi-input")
 (defvar emacs-pi-show-thinking)
 
 (defface emacs-pi-user-face '((t :inherit font-lock-keyword-face :weight bold))
@@ -30,8 +31,6 @@
   "Face for Pi labels." :group 'emacs-pi)
 (defface emacs-pi-tool-face '((t :inherit shadow))
   "Face for tool summaries." :group 'emacs-pi)
-(defface emacs-pi-input-face '((t :inherit widget-field :extend t))
-  "Background of the Pi composer." :group 'emacs-pi)
 (defface emacs-pi-status-face '((t :inherit mode-line))
   "Face for Pi activity in the mode line." :group 'emacs-pi)
 
@@ -54,6 +53,8 @@
     (define-key map (kbd "C-c C-r") #'emacs-pi-resume)
     (define-key map (kbd "C-c C-b") #'emacs-pi-switch-chat)
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)
+    (define-key map (kbd "C-c C-p") #'emacs-pi-paste)
+    (define-key map (kbd "s-v") #'emacs-pi-paste)
     (define-key map (kbd "C-c C-q") #'emacs-pi-quit)
     (define-key map (kbd "M-p") #'emacs-pi-previous-prompt)
     (define-key map (kbd "M-n") #'emacs-pi-next-prompt)
@@ -182,6 +183,21 @@
              (>= begin (+ (marker-position emacs-pi--input-marker)
                           (length emacs-pi--composer-prefix))))
     (cl-incf emacs-pi--draft-revision)))
+
+(defun emacs-pi-ui--composer-face ()
+  "Use the theme's warning color as the entire composer line's background."
+  (let* ((warning (or (face-foreground 'warning nil t) "#d97706"))
+         (rgb (and (stringp warning)
+                   (ignore-errors (color-values warning))))
+         (luminance (when rgb
+                      (/ (+ (* 0.2126 (nth 0 rgb))
+                            (* 0.7152 (nth 1 rgb))
+                            (* 0.0722 (nth 2 rgb)))
+                         65535.0))))
+    (list :background warning
+          :foreground (if (and luminance (> luminance 0.5))
+                          "#111111" "#ffffff")
+          :extend t)))
 
 (defun emacs-pi-ui--format-tokens (value)
   "Format token VALUE compactly for the status line."
@@ -457,11 +473,16 @@
             (emacs-pi-ui--transcript session)
             (add-text-properties (point-min)
                                  (marker-position emacs-pi--input-marker)
-                                 '(read-only t rear-nonsticky (read-only))))
+                                 '(read-only t rear-nonsticky nil))
+            (when (< (point-min) (marker-position emacs-pi--input-marker))
+              (add-text-properties (point-min) (1+ (point-min))
+                                   '(front-sticky (read-only)))))
           (when emacs-pi--input-background
             (move-overlay emacs-pi--input-background
                           (1+ (marker-position emacs-pi--input-marker))
-                          (point-max)))
+                          (point-max))
+            (overlay-put emacs-pi--input-background 'face
+                         (emacs-pi-ui--composer-face)))
           (when at-end (goto-char (point-max)))
           (force-mode-line-update t))))))
 
@@ -491,15 +512,20 @@
       (setq default-directory (emacs-pi-session-root session))
       (emacs-pi-chat-mode)
       (setq-local emacs-pi--session session)
-      (insert (propertize emacs-pi--composer-prefix
-                          'read-only t 'rear-nonsticky '(read-only)))
+      (let ((prefix (propertize emacs-pi--composer-prefix 'read-only t)))
+        (add-text-properties 0 1 '(front-sticky (read-only)) prefix)
+        (add-text-properties (1- (length prefix)) (length prefix)
+                             '(rear-nonsticky (read-only)) prefix)
+        (insert prefix))
       (setq-local emacs-pi--input-marker
                   (copy-marker (point-min) t))
       (setq-local emacs-pi--input-background
                   (make-overlay (1+ (marker-position emacs-pi--input-marker))
                                 (point-max) nil t t))
-      (overlay-put emacs-pi--input-background 'face 'emacs-pi-input-face)
-      (goto-char (point-max)))
+      (overlay-put emacs-pi--input-background 'face
+                   (emacs-pi-ui--composer-face))
+      (goto-char (point-max))
+      (setq buffer-undo-list nil))
     (setf (emacs-pi-session-buffer session) buffer)
     buffer))
 
