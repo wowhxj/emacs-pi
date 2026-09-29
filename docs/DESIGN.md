@@ -675,7 +675,7 @@ extension input/editor 的 value 是字符串；位图粘贴可显式保存临�
 | emacs-pi-select-thinking | /thinking、/reasoning | 从服务端可用级别选择 |
 | emacs-pi-compact | /compact | idle 时手动压缩，可带 instructions |
 | emacs-pi-restart | /restart | 当前实例新进程恢复 |
-| emacs-pi-quit | C-c C-q | bury buffer，后台进程继续；README 明说 |
+| emacs-pi-quit | C-c C-q | 结束 Pi 进程并 kill 聊天 buffer，清理活动聊天记录 |
 | emacs-pi-shutdown | M-x | 停止并关闭进程，保留聊天 buffer |
 | emacs-pi-doctor | M-x、/doctor | 诊断版本、路径、状态、helper 可用性 |
 

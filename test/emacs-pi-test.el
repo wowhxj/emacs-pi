@@ -305,6 +305,37 @@
       (when (buffer-live-p chat) (kill-buffer chat))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-quit-removes-chat-buffer-and-process ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-executable (expand-file-name "test/fake-pi.py"
+                                               (file-name-directory
+                                                (locate-library "emacs-pi"))))
+         (chat nil)
+         (session nil)
+         (connection nil)
+         (id nil))
+    (unwind-protect
+        (save-window-excursion
+          (setq chat (emacs-pi--open root)
+                session (with-current-buffer chat emacs-pi--session)
+                id (emacs-pi-session-client-id session))
+          (should (emacs-pi-test--wait
+                   (lambda () (eq (emacs-pi-session-phase session) 'ready))))
+          (setq connection (emacs-pi-session-connection session))
+          (should (eq (gethash id emacs-pi--chats) chat))
+          (with-current-buffer chat
+            (emacs-pi-input-set "unsent draft")
+            (emacs-pi-quit))
+          (should-not (buffer-live-p chat))
+          (should-not (gethash id emacs-pi--chats))
+          (should-not (emacs-pi-session-buffer session))
+          (should (eq (emacs-pi-session-phase session) 'dead))
+          (should (emacs-pi-test--wait
+                   (lambda () (not (process-live-p
+                                     (emacs-pi-rpc-process connection)))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-context-header-and-mode-line-state ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (usage (emacs-pi--jobject "tokens" 6200 "contextWindow" 128000))

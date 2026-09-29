@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.2
+;; Version: 0.2.3
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -302,9 +302,10 @@
   (emacs-pi-session-shutdown (emacs-pi--require-session)))
 
 (defun emacs-pi-quit ()
-  "Bury this chat buffer without stopping its Pi process."
+  "Close this chat, stopping its Pi process and killing its buffer."
   (interactive)
-  (bury-buffer))
+  (emacs-pi--require-session)
+  (kill-buffer (current-buffer)))
 
 (defun emacs-pi-show-queue ()
   "Show Pi's latest steering and follow-up queue snapshot."
@@ -341,7 +342,7 @@
     (princ "/new  /resume  /model  /thinking  /reasoning\n")
     (princ "/queue  /restart  /stop  /doctor  /help\n\n")
     (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
-    (princ "C-c C-r resume · C-c C-b switch chats · C-c C-q hide\n")
+    (princ "C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
     (princ "i focus input from history · C-a stay after You>\n")
     (princ "RET/TAB on a Process or tool heading toggles its steps\n")
     (princ "M-p/M-n prompt history · TAB path/command completion\n\n")

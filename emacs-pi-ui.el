@@ -24,6 +24,7 @@
 (declare-function emacs-pi-input-completion-at-point "emacs-pi-input")
 (declare-function emacs-pi-paste "emacs-pi-input")
 (defvar emacs-pi-show-thinking)
+(defvar emacs-pi--chats)
 
 (defface emacs-pi-user-face '((t :inherit font-lock-keyword-face :weight bold))
   "Face for user labels." :group 'emacs-pi)
@@ -530,15 +531,21 @@
     buffer))
 
 (defun emacs-pi-ui--cleanup ()
-  "Release this buffer's timer and Pi process."
+  "Release this chat's registry entry, Pi process, and timers."
+  (when emacs-pi--session
+    (let* ((session emacs-pi--session)
+           (id (emacs-pi-session-client-id session)))
+      (when (and (boundp 'emacs-pi--chats)
+                 (eq (gethash id emacs-pi--chats) (current-buffer)))
+        (remhash id emacs-pi--chats))
+      (setf (emacs-pi-session-buffer session) nil)
+      (emacs-pi-session-shutdown session)))
   (when emacs-pi--render-timer
     (cancel-timer emacs-pi--render-timer)
     (setq emacs-pi--render-timer nil))
   (when emacs-pi--spinner-timer
     (cancel-timer emacs-pi--spinner-timer)
-    (setq emacs-pi--spinner-timer nil))
-  (when emacs-pi--session
-    (emacs-pi-session-shutdown emacs-pi--session)))
+    (setq emacs-pi--spinner-timer nil)))
 
 (provide 'emacs-pi-ui)
 ;;; emacs-pi-ui.el ends here
