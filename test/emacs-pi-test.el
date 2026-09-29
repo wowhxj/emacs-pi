@@ -132,14 +132,54 @@
             (should (= (point) begin))
             (emacs-pi-ui-focus-or-insert)
             (should (equal (emacs-pi-input-text) "ihello  "))
-            (let ((face (overlay-get emacs-pi--input-background 'face)))
+            (should (eq (overlay-get emacs-pi--input-background 'face)
+                        'emacs-pi-input-face))
+            (should (<= (overlay-start emacs-pi--input-background) begin))
+            (should (= (overlay-end emacs-pi--input-background)
+                       (point-max)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-historical-user-messages-are-highlighted ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "highlight-123456" :phase 'ready
+                   :messages (list
+                              (emacs-pi--jobject "role" "user"
+                                                 "content" "First line\nsecond line")
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" "Answer")
+                              (emacs-pi--jobject "role" "user"
+                                                 "content" "Another prompt"))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (should (= (length emacs-pi--user-overlays) 2))
+          (dolist (overlay emacs-pi--user-overlays)
+            (let ((face (overlay-get overlay 'face)))
               (should (equal (plist-get face :background)
                              (or (face-foreground 'warning nil t)
                                  "#d97706")))
               (should (plist-get face :extend)))
-            (should (<= (overlay-start emacs-pi--input-background) begin))
-            (should (= (overlay-end emacs-pi--input-background)
-                       (point-max)))))
+            (should (eq (char-before (overlay-end overlay)) ?\n))
+            (should (< (overlay-end overlay)
+                       (marker-position emacs-pi--input-marker))))
+          (goto-char (point-min))
+          (search-forward "second line")
+          (should (cl-some (lambda (overlay)
+                             (and (<= (overlay-start overlay) (point))
+                                  (< (point) (overlay-end overlay))))
+                           emacs-pi--user-overlays))
+          (should-not (cl-some (lambda (overlay)
+                                 (<= (overlay-start overlay)
+                                     (emacs-pi-input-beginning)
+                                     (overlay-end overlay)))
+                               emacs-pi--user-overlays))
+          (emacs-pi-ui-render session)
+          (should (= (length emacs-pi--user-overlays) 2))
+          (should (eq (overlay-get emacs-pi--input-background 'face)
+                      'emacs-pi-input-face)))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 

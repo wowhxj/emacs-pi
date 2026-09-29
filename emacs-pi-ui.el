@@ -32,6 +32,8 @@
   "Face for Pi labels." :group 'emacs-pi)
 (defface emacs-pi-tool-face '((t :inherit shadow))
   "Face for tool summaries." :group 'emacs-pi)
+(defface emacs-pi-input-face '((t :inherit widget-field :extend t))
+  "Background of the Pi composer." :group 'emacs-pi)
 (defface emacs-pi-status-face '((t :inherit mode-line))
   "Face for Pi activity in the mode line." :group 'emacs-pi)
 
@@ -71,6 +73,7 @@
 (defvar-local emacs-pi--spinner-timer nil)
 (defvar-local emacs-pi--spinner-index 0)
 (defvar-local emacs-pi--input-background nil)
+(defvar-local emacs-pi--user-overlays nil)
 (defvar-local emacs-pi--process-overlays nil)
 (defvar-local emacs-pi--fold-expanded nil)
 (defvar-local emacs-pi--detail-index 0)
@@ -185,8 +188,8 @@
                           (length emacs-pi--composer-prefix))))
     (cl-incf emacs-pi--draft-revision)))
 
-(defun emacs-pi-ui--composer-face ()
-  "Use the theme's warning color as the entire composer line's background."
+(defun emacs-pi-ui--user-message-face ()
+  "Use the theme's warning color to highlight historical user messages."
   (let* ((warning (or (face-foreground 'warning nil t) "#d97706"))
          (rgb (and (stringp warning)
                    (ignore-errors (color-values warning))))
@@ -417,9 +420,15 @@
          (count (+ (apply #'+ (mapcar #'emacs-pi-ui--step-count steps))
                    (length thinking))))
     (when user
-      (emacs-pi-ui--insert-label "You: " 'emacs-pi-user-face)
-      (emacs-pi-ui--insert-blocks user session)
-      (insert "\n\n"))
+      (let ((start (point)))
+        (emacs-pi-ui--insert-label "You: " 'emacs-pi-user-face)
+        (emacs-pi-ui--insert-blocks user session)
+        (unless (bolp) (insert "\n"))
+        (let ((overlay (make-overlay start (point) nil t nil)))
+          (overlay-put overlay 'face (emacs-pi-ui--user-message-face))
+          (overlay-put overlay 'evaporate t)
+          (push overlay emacs-pi--user-overlays))
+        (insert "\n")))
     (when (> count 0)
       (let ((start (point))
             (label (format "Process · %d step%s" count
@@ -465,6 +474,8 @@
                (at-end (>= (point) (max (point-min) (- (point-max) 2))))
                (start (marker-position emacs-pi--input-marker))
                (buffer-undo-list t))
+          (mapc #'delete-overlay emacs-pi--user-overlays)
+          (setq emacs-pi--user-overlays nil)
           (mapc #'delete-overlay emacs-pi--process-overlays)
           (setq emacs-pi--process-overlays nil)
           (setq emacs-pi--detail-index 0)
@@ -483,7 +494,7 @@
                           (1+ (marker-position emacs-pi--input-marker))
                           (point-max))
             (overlay-put emacs-pi--input-background 'face
-                         (emacs-pi-ui--composer-face)))
+                         'emacs-pi-input-face))
           (when at-end (goto-char (point-max)))
           (force-mode-line-update t))))))
 
@@ -523,8 +534,7 @@
       (setq-local emacs-pi--input-background
                   (make-overlay (1+ (marker-position emacs-pi--input-marker))
                                 (point-max) nil t t))
-      (overlay-put emacs-pi--input-background 'face
-                   (emacs-pi-ui--composer-face))
+      (overlay-put emacs-pi--input-background 'face 'emacs-pi-input-face)
       (goto-char (point-max))
       (setq buffer-undo-list nil))
     (setf (emacs-pi-session-buffer session) buffer)
