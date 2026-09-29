@@ -156,16 +156,16 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                   (emacs-pi--jencode path)
                 path)))
 
-(defun emacs-pi-input--file-choices (query)
-  "Return project and nearby file choices for @ QUERY."
-  (let* ((root (emacs-pi-session-root emacs-pi--session))
-         (external (or (file-name-absolute-p query)
+(defun emacs-pi-input--file-choices (query root)
+  "Return project and nearby file choices for @ QUERY under ROOT."
+  (let* ((external (or (file-name-absolute-p query)
                        (string-prefix-p "~/" query)))
          (relative-dir (or (file-name-directory query) ""))
          (directory (expand-file-name relative-dir root))
          (seen (make-hash-table :test #'equal))
          (paths nil))
-    (when (and (not external) (file-directory-p root))
+    (when (and (not external) (string-empty-p relative-dir)
+               (file-directory-p root))
       (when-let* ((project (let ((default-directory root))
                             (project-current nil root))))
         (dolist (file (condition-case nil (project-files project)
@@ -189,6 +189,10 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                  (puthash reference t seen)
                  (cons reference (emacs-pi-input--file-mention reference)))))
            (sort paths #'string-lessp)))))
+
+(defun emacs-pi-input--path-query-p (query)
+  "Return non-nil when QUERY names a path rather than a session."
+  (string-match-p "/" query))
 
 (defun emacs-pi-input--session-mention (record)
   "Return a compact canonical mention for Pi session RECORD."
@@ -249,11 +253,16 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
   (interactive)
   (let* ((context (emacs-pi-input--completion-context))
          (kind (plist-get context :kind))
+         (root (and (eq kind 'reference)
+                    (emacs-pi-session-root emacs-pi--session)))
+         (query (plist-get context :query))
+         (sessions (and (eq kind 'reference)
+                        (emacs-pi-input--session-choices)))
          (choices (pcase kind
                     ('reference (append
-                                 (emacs-pi-input--file-choices
-                                  (plist-get context :query))
-                                 (emacs-pi-input--session-choices)))
+                                 (emacs-pi-input--file-choices query root)
+                                 (unless (emacs-pi-input--path-query-p query)
+                                   sessions)))
                     ('slash (emacs-pi-input--slash-choices)))))
     (cond
      ((not context)
@@ -265,17 +274,15 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
              (start (copy-marker (plist-get context :start)))
              (end (copy-marker (plist-get context :end) t))
              (original (plist-get context :original))
-             (query (plist-get context :query))
-             (root (and (eq kind 'reference)
-                        (emacs-pi-session-root emacs-pi--session)))
              (choice-values (make-hash-table :test #'equal))
              (collection
               (if (eq kind 'reference)
                   (completion-table-dynamic
                    (lambda (input)
                      (let ((current-choices
-                            (append (emacs-pi-input--file-choices input)
-                                    (emacs-pi-input--session-choices))))
+                            (append (emacs-pi-input--file-choices input root)
+                                    (unless (emacs-pi-input--path-query-p input)
+                                      sessions))))
                        (dolist (choice current-choices)
                          (puthash (car choice) (cdr choice) choice-values))
                        current-choices))

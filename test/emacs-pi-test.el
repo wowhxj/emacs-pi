@@ -955,6 +955,7 @@
 (ert-deftest emacs-pi-minibuffer-completion-works-with-native-styles ()
   (let* ((root (make-temp-file "emacs-pi-complete-" t))
          (file (expand-file-name "alpha file.el" root))
+         (nested (expand-file-name "deep/nested/target.txt" root))
          (session (make-emacs-pi-session :root (file-name-as-directory root)
                                          :client-id "completion-123456"
                                          :phase 'ready))
@@ -964,6 +965,8 @@
     (unwind-protect
         (progn
           (with-temp-file file (insert "example"))
+          (make-directory (file-name-directory nested) t)
+          (with-temp-file nested (insert "nested"))
           (with-current-buffer buffer
             (let ((completion-styles '(basic)))
               (emacs-pi-input-set "Read @alpha")
@@ -973,15 +976,36 @@
                          (lambda (_prompt choices &rest args)
                            (should (equal (nth 2 args) "alpha"))
                            (should (memq 'substring completion-styles))
-                           (should (completion-all-completions
-                                    "alpha" choices nil 5))
-                           (cl-find-if
-                            (lambda (candidate)
-                              (string-match-p "alpha file.el" candidate))
-                            (all-completions "alpha" choices)))))
+                           (with-temp-buffer
+                             (should-not emacs-pi--session)
+                             (should (completion-all-completions
+                                      "alpha" choices nil 5))
+                             (cl-find-if
+                              (lambda (candidate)
+                                (string-match-p "alpha file.el" candidate))
+                              (all-completions "alpha" choices))))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
                              "Read @\"alpha file.el\""))
+              (emacs-pi-input-set "Read @deep/")
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _args)
+                           (with-temp-buffer
+                             (should (member "deep/nested/"
+                                             (all-completions "deep/" choices)))
+                             "deep/nested/"))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text) "Read @deep/nested/"))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _args)
+                           (with-temp-buffer
+                             (should (equal (all-completions
+                                             "deep/nested/" choices)
+                                            '("deep/nested/target.txt")))
+                             "deep/nested/target.txt"))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text)
+                             "Read @deep/nested/target.txt"))
               (emacs-pi-input-set "Use @")
               (cl-letf (((symbol-function 'emacs-pi-history-list)
                          (lambda (&optional _root) (list record)))
