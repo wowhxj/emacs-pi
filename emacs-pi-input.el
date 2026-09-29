@@ -16,6 +16,12 @@
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
 
+(defvar emacs-pi-input--image-remove-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] #'emacs-pi-input-remove-image)
+    map)
+  "Mouse map for removing a staged image from its preview.")
+
 (defconst emacs-pi-input--local-commands
   '(("/new" . "Start a new session")
     ("/resume" . "Choose a saved session")
@@ -63,7 +69,7 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
                 (length (string-trim-right (emacs-pi-input-text))))))
 
 (defun emacs-pi-input--show-attachments ()
-  "Update the pending image names shown above the composer."
+  "Show clickable pending image thumbnails above the composer."
   (when emacs-pi--attachment-overlay
     (delete-overlay emacs-pi--attachment-overlay))
   (when emacs-pi--attachments
@@ -71,13 +77,69 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
           (make-overlay (marker-position emacs-pi--input-marker)
                         (marker-position emacs-pi--input-marker)))
     (overlay-put emacs-pi--attachment-overlay 'before-string
-                 (concat (propertize
-                          (format "[attached: %s]\n"
-                                  (string-join
-                                   (mapcar (lambda (item)
-                                             (emacs-pi--jget item "name"))
-                                           emacs-pi--attachments) ", "))
-                          'face 'shadow)))))
+                 (concat
+                  "\n"
+                  (string-join
+                   (cl-loop for image in (reverse emacs-pi--attachments)
+                            for index from 0
+                            collect
+                            (propertize
+                             (concat "  " (emacs-pi-ui--image-preview-string image)
+                                     "  × click to remove")
+                             'emacs-pi-attachment-index index
+                             'keymap emacs-pi-input--image-remove-map
+                             'mouse-face 'highlight
+                             'help-echo "mouse-1: remove; C-c C-o: open in default viewer"))
+                   "\n")
+                  "\n"))))
+
+(defun emacs-pi-input--remove-attachment (index)
+  "Remove staged attachment at display INDEX, preserving other images."
+  (unless (and (integerp index)
+               (<= 0 index) (< index (length emacs-pi--attachments)))
+    (user-error "No staged image at this position"))
+  (setq emacs-pi--attachments
+        (nreverse
+         (cl-loop for image in (reverse emacs-pi--attachments)
+                  for position from 0
+                  unless (= position index) collect image)))
+  (emacs-pi-input--show-attachments))
+
+(defun emacs-pi-input-remove-image (event)
+  "Remove the staged image clicked with mouse EVENT."
+  (interactive "e")
+  (let* ((position (event-start event))
+         (hit (posn-string position))
+         (index (and hit (get-text-property
+                          (cdr hit) 'emacs-pi-attachment-index (car hit))))
+         (window (posn-window position)))
+    (unless (window-live-p window)
+      (user-error "No Pi chat at this position"))
+    (with-current-buffer (window-buffer window)
+      (emacs-pi-input--remove-attachment index))))
+
+(defun emacs-pi-input-open-image ()
+  "View the image at point or choose a staged composer attachment."
+  (interactive)
+  (let ((historical (or (get-text-property (point) 'emacs-pi-image)
+                        (and (> (point) (point-min))
+                             (get-text-property (1- (point)) 'emacs-pi-image)))))
+    (cond
+     (historical (emacs-pi-ui-view-image historical))
+     (emacs-pi--attachments
+      (let* ((images (reverse emacs-pi--attachments))
+             (choices (cl-loop for image in images for index from 1
+                               collect (cons
+                                        (format "%d. %s" index
+                                                (or (emacs-pi--jget image "name")
+                                                    "image"))
+                                        image)))
+             (selected (if (= (length choices) 1)
+                           (cdar choices)
+                         (cdr (assoc (completing-read "View image: " choices nil t)
+                                     choices)))))
+        (emacs-pi-ui-view-image selected)))
+     (t (user-error "Move to a history image or attach an image first")))))
 
 (defun emacs-pi-input--image-object (file &optional name)
   "Read PNG or JPEG FILE into a Pi image object, optionally named NAME."

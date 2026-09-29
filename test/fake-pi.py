@@ -41,7 +41,9 @@ for raw in sys.stdin:
     elif kind == "prompt":
         send({"id": request_id, "type": "response", "command": kind, "success": True})
         text = command.get("message", "")
-        user = {"role": "user", "content": text, "timestamp": 1000 + counter}
+        images = command.get("images", [])
+        content = ([{"type": "text", "text": text}] + images) if images else text
+        user = {"role": "user", "content": content, "timestamp": 1000 + counter}
         answer = "收到：" + text
         assistant = {
             "role": "assistant",

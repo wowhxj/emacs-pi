@@ -25,6 +25,8 @@
 (declare-function emacs-pi-input-completion-at-point "emacs-pi-input")
 (declare-function emacs-pi-complete "emacs-pi-input")
 (declare-function emacs-pi-paste "emacs-pi-input")
+(declare-function emacs-pi-input-open-image "emacs-pi-input")
+(declare-function w32-shell-execute "w32fns")
 (defvar emacs-pi-show-thinking)
 (defvar emacs-pi--chats)
 (defvar emacs-pi--queue-session)
@@ -61,6 +63,7 @@
     (define-key map (kbd "C-c C-b") #'emacs-pi-switch-chat)
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)
     (define-key map (kbd "C-c C-p") #'emacs-pi-paste)
+    (define-key map (kbd "C-c C-o") #'emacs-pi-input-open-image)
     (define-key map (kbd "s-v") #'emacs-pi-paste)
     (define-key map (kbd "C-c C-q") #'emacs-pi-quit)
     (define-key map (kbd "M-p") #'emacs-pi-previous-prompt)
@@ -80,6 +83,9 @@
 (defvar-local emacs-pi--input-background nil)
 (defvar-local emacs-pi--user-overlays nil)
 (defvar-local emacs-pi--process-overlays nil)
+(defvar-local emacs-pi--image-cache nil)
+(defvar emacs-pi-ui--external-image-files nil
+  "Temporary image files opened with the system viewer.")
 (defvar-local emacs-pi--fold-expanded nil)
 (defvar-local emacs-pi--fold-was-running nil)
 (defvar-local emacs-pi--detail-index 0)
@@ -97,6 +103,8 @@
   (setq-local buffer-invisibility-spec (copy-tree buffer-invisibility-spec))
   (add-to-invisibility-spec 'emacs-pi-process)
   (setq-local emacs-pi--fold-expanded (make-hash-table :test #'equal))
+  (setq-local emacs-pi--image-cache
+              (make-hash-table :test #'eq :weakness 'key))
   (tab-line-mode 1)
   (setq-local tab-line-format '(:eval (emacs-pi-ui--header)))
   (setq-local header-line-format '(:eval (emacs-pi-ui--pinned)))
@@ -266,6 +274,77 @@
         (buffer-substring (point-min) (point-max)))
     (error text)))
 
+(defun emacs-pi-ui--image-type (block)
+  "Return the supported Emacs image type for BLOCK."
+  (cdr (assoc (emacs-pi--jget block "mimeType")
+              '(("image/png" . png) ("image/jpeg" . jpeg)
+                ("image/webp" . webp) ("image/gif" . gif)))))
+
+(defun emacs-pi-ui--image-preview (block)
+  "Return a cached thumbnail descriptor for image BLOCK, or nil."
+  (when (and (display-images-p) (emacs-pi-ui--image-type block)
+             (stringp (emacs-pi--jget block "data")))
+    (or (gethash block emacs-pi--image-cache)
+        (let ((image (ignore-errors
+                       (create-image
+                        (base64-decode-string (emacs-pi--jget block "data"))
+                        (emacs-pi-ui--image-type block) t
+                        :max-width 200 :max-height 120 :scale 1))))
+          (when image (puthash block image emacs-pi--image-cache))
+          image))))
+
+(defun emacs-pi-ui--image-preview-string (block)
+  "Return a thumbnail for BLOCK with its image data at point."
+  (let* ((name (or (emacs-pi--jget block "name") "image"))
+         (preview (emacs-pi-ui--image-preview block))
+         (label (propertize "[image]" 'emacs-pi-image block
+                            'help-echo "C-c C-o: open in default image viewer")))
+    (when preview (put-text-property 0 (length label) 'display preview label))
+    (concat label " " (propertize name 'emacs-pi-image block))))
+
+(defun emacs-pi-ui--cleanup-external-images ()
+  "Remove image copies created for the system viewer."
+  (dolist (file emacs-pi-ui--external-image-files)
+    (when (file-exists-p file)
+      (ignore-errors (delete-file file))))
+  (setq emacs-pi-ui--external-image-files nil))
+
+(add-hook 'kill-emacs-hook #'emacs-pi-ui--cleanup-external-images)
+
+(defun emacs-pi-ui--open-external-image-file (file)
+  "Open FILE with the operating system's default image application."
+  (cond
+   ((eq system-type 'darwin)
+    (unless (equal (call-process "/usr/bin/open" nil nil nil file) 0)
+      (user-error "The system image viewer could not open this file")))
+   ((eq system-type 'windows-nt)
+    (w32-shell-execute "open" file))
+   ((executable-find "xdg-open")
+    (start-process "emacs-pi-image-open" nil (executable-find "xdg-open") file))
+   (t (user-error "No system image opener is available"))))
+
+(defun emacs-pi-ui-view-image (block)
+  "Open image BLOCK with the system's default image viewer."
+  (unless (and (emacs-pi-ui--image-type block)
+               (stringp (emacs-pi--jget block "data")))
+    (user-error "Image data is unavailable"))
+  (let* ((type (emacs-pi-ui--image-type block))
+         (file (make-temp-file "emacs-pi-image-" nil
+                               (concat "." (symbol-name type)))))
+    (condition-case err
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region
+             (base64-decode-string (emacs-pi--jget block "data"))
+             nil file nil 'silent))
+          (emacs-pi-ui--open-external-image-file file)
+          (push file emacs-pi-ui--external-image-files)
+          (message "Opened image in the system viewer")
+          file)
+      (error
+       (when (file-exists-p file) (delete-file file))
+       (user-error "Cannot open image: %s" (error-message-string err))))))
+
 (defun emacs-pi-ui--insert-label (label face)
   "Insert LABEL with FACE."
   (insert (propertize label 'face face 'read-only t)))
@@ -351,7 +430,9 @@ Align subsequent step headings to DETAIL-COLUMN when non-nil."
                 detail
                 (format "tool:%s" (or id (cl-incf emacs-pi--detail-index)))
                 detail-column))))
-          ("image" (insert "[image]"))
+          ("image"
+           (unless (bolp) (insert "\n"))
+           (insert (emacs-pi-ui--image-preview-string block) "\n"))
           (_ nil)))))))
 
 (defun emacs-pi-ui--content-types (message)

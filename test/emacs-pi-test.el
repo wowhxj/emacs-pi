@@ -242,6 +242,125 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-attachment-preview-click-removes-only-selected-image ()
+  (let* ((root (make-temp-file "emacs-pi-preview-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "preview-123456" :phase 'ready))
+         (buffer (emacs-pi-ui-create session))
+         (first (emacs-pi--jobject "type" "image" "name" "same.png"
+                                    "mimeType" "image/png" "data" "b25l"))
+         (second (emacs-pi--jobject "type" "image" "name" "same.png"
+                                     "mimeType" "image/png" "data" "dHdv")))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer buffer)
+          (with-current-buffer buffer
+            (cl-letf (((symbol-function 'display-images-p)
+                       (lambda (&rest _) t))
+                      ((symbol-function 'create-image)
+                       (lambda (&rest _) '(image :type png))))
+              (setq emacs-pi--attachments (list second first))
+              (emacs-pi-input--show-attachments)
+              (let* ((preview (overlay-get emacs-pi--attachment-overlay
+                                           'before-string))
+                     (first-label (string-match "same.png" preview))
+                     (second-label (string-match "same.png" preview
+                                                 (1+ first-label)))
+                     (image-start (string-match "\\[image\\]" preview))
+                     (map (get-text-property second-label 'keymap preview)))
+                (should first-label)
+                (should second-label)
+                (should (equal (get-text-property image-start 'display preview)
+                               '(image :type png)))
+                (should (eq (lookup-key map [mouse-1])
+                            #'emacs-pi-input-remove-image))
+                (should (= (get-text-property second-label
+                                              'emacs-pi-attachment-index preview)
+                           1))
+                (let (opened)
+                  (cl-letf (((symbol-function 'completing-read)
+                             (lambda (_prompt choices &rest _)
+                               (caar (last choices))))
+                            ((symbol-function 'emacs-pi-ui-view-image)
+                             (lambda (block) (setq opened block))))
+                    (emacs-pi-input-open-image))
+                  (should (eq opened second)))
+                (cl-letf (((symbol-function 'event-start)
+                           (lambda (_event) (list (selected-window))))
+                          ((symbol-function 'posn-string)
+                           (lambda (_position) (cons preview second-label))))
+                  (emacs-pi-input-remove-image 'fake-click))
+                (should (equal emacs-pi--attachments (list first)))
+                (should (equal (emacs-pi-input-text) ""))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-sent-image-renders-and-opens-from-history ()
+  (let* ((root (make-temp-file "emacs-pi-history-image-" t))
+         (emacs-pi-executable (expand-file-name
+                               "test/fake-pi.py"
+                               (file-name-directory (locate-library "emacs-pi"))))
+         (chat (emacs-pi--open root))
+         (session (with-current-buffer chat emacs-pi--session))
+         (image (emacs-pi--jobject "type" "image" "name" "test.png"
+                                   "mimeType" "image/png" "data" "b25l"))
+         (opened nil))
+    (unwind-protect
+        (progn
+          (should (emacs-pi-test--wait
+                   (lambda () (eq (emacs-pi-session-phase session) 'ready))))
+          (with-current-buffer chat
+            (setq emacs-pi--attachments (list image))
+            (emacs-pi-input--show-attachments)
+            (emacs-pi-input-set "Look at this")
+            (emacs-pi-send))
+          (should (emacs-pi-test--wait
+                   (lambda ()
+                     (cl-some (lambda (message)
+                                (vectorp (emacs-pi--jget message "content")))
+                              (emacs-pi-session-messages session)))))
+          (with-current-buffer chat
+            (cl-letf (((symbol-function 'display-images-p)
+                       (lambda (&rest _) t))
+                      ((symbol-function 'create-image)
+                       (lambda (&rest _) '(image :type png)))
+                      ((symbol-function 'emacs-pi-ui-view-image)
+                       (lambda (block) (setq opened block))))
+              (emacs-pi-ui-render session)
+              (goto-char (point-min))
+              (should (search-forward "[image]" nil t))
+              (goto-char (- (point) (length "[image]")))
+              (should (equal (get-text-property (point) 'display)
+                             '(image :type png)))
+              (should (equal (emacs-pi--jget
+                              (get-text-property (point) 'emacs-pi-image)
+                              "data")
+                             "b25l"))
+              (emacs-pi-input-open-image)
+              (should (eq opened (get-text-property (point)
+                                                    'emacs-pi-image))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-external-image-viewer-uses-exact-bytes ()
+  (let* ((raw (unibyte-string 137 80 78 71 13 10 26 10 0 255))
+         (image (emacs-pi--jobject
+                 "type" "image" "mimeType" "image/png"
+                 "data" (base64-encode-string raw t)))
+         (opened nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-pi-ui--open-external-image-file)
+                   (lambda (file) (setq opened file))))
+          (should (equal (emacs-pi-ui-view-image image) opened))
+          (should (string-suffix-p ".png" opened))
+          (should (equal (with-temp-buffer
+                           (set-buffer-multibyte nil)
+                           (insert-file-contents-literally opened)
+                           (buffer-string))
+                         raw)))
+      (emacs-pi-ui--cleanup-external-images)
+      (when opened (should-not (file-exists-p opened))))))
+
 (ert-deftest emacs-pi-process-fold-survives-redraw ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (user (emacs-pi--jobject "role" "user" "content" "Please inspect"))
