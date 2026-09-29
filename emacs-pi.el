@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.1
+;; Version: 0.2.2
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -39,6 +39,12 @@
 
 (defvar emacs-pi--chats (make-hash-table :test #'equal)
   "Live chat buffers keyed by client identity.")
+
+(defun emacs-pi--show-chat (buffer)
+  "Show Pi chat BUFFER in the selected frame's sole window."
+  (switch-to-buffer buffer)
+  (delete-other-windows)
+  buffer)
 
 (defun emacs-pi--check-arguments ()
   "Reject arguments that would change RPC and session lifecycle."
@@ -127,7 +133,7 @@
                                    #'emacs-pi--extension))
          (buffer (emacs-pi-ui-create session)))
     (puthash (emacs-pi-session-client-id session) buffer emacs-pi--chats)
-    (pop-to-buffer buffer)
+    (emacs-pi--show-chat buffer)
     (emacs-pi-ui-render session)
     buffer))
 
@@ -211,7 +217,7 @@
                         (file-equal-p session-file path))
                (setq existing buffer))))))
      emacs-pi--chats)
-    (if existing (pop-to-buffer existing)
+    (if existing (emacs-pi--show-chat existing)
       (emacs-pi--open cwd path))))
 
 (defun emacs-pi--pick-session (records &optional new-root)
@@ -251,8 +257,9 @@
                  (push (cons (buffer-name buffer) buffer) choices)))
              emacs-pi--chats)
     (unless choices (user-error "No active Pi chats"))
-    (pop-to-buffer (cdr (assoc (completing-read "Pi chat: " choices nil t)
-                               choices)))))
+    (emacs-pi--show-chat
+     (cdr (assoc (completing-read "Pi chat: " choices nil t)
+                 choices)))))
 
 (defun emacs-pi-stop ()
   "Clear queued prompts and stop the current Pi run."

@@ -428,7 +428,7 @@
           (dolist (message steps)
             (emacs-pi-ui--insert-label "Pi step: " 'emacs-pi-tool-face)
             (emacs-pi-ui--insert-blocks message session)
-            (insert "\n\n"))
+            (unless (bolp) (insert "\n")))
           (dolist (block thinking)
             (let* ((thought (or (emacs-pi--jget block "thinking") ""))
                    (summary (truncate-string-to-width

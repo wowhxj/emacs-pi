@@ -256,6 +256,55 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-process-steps-have-no-blank-lines ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (tool-one (emacs-pi--jobject "type" "toolCall" "id" "one"
+                                      "name" "read"))
+         (tool-two (emacs-pi--jobject "type" "toolCall" "id" "two"
+                                      "name" "ls"))
+         (session (make-emacs-pi-session
+                   :root root :client-id "spacing-123456" :phase 'ready
+                   :tools (make-hash-table :test #'equal)
+                   :messages (list
+                              (emacs-pi--jobject "role" "user"
+                                                 "content" "Inspect")
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" (vector tool-one))
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" (vector tool-two))
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" "Done"))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (let* ((header (cl-find-if
+                          (lambda (overlay)
+                            (equal (overlay-get overlay 'emacs-pi-process-key)
+                                   "tool:one"))
+                          emacs-pi--process-overlays))
+                 (body (and header (overlay-get header 'emacs-pi-process))))
+            (should body)
+            (goto-char (overlay-end body))
+            (should (looking-at-p "Pi step: "))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-open-uses-full-window ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-executable (expand-file-name "test/fake-pi.py"
+                                               (file-name-directory
+                                                (locate-library "emacs-pi"))))
+         (chat nil))
+    (unwind-protect
+        (save-window-excursion
+          (split-window-right)
+          (setq chat (emacs-pi--open root))
+          (should (one-window-p))
+          (should (eq (window-buffer (selected-window)) chat)))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-context-header-and-mode-line-state ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (usage (emacs-pi--jobject "tokens" 6200 "contextWindow" 128000))
