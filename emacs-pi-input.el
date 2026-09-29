@@ -24,6 +24,7 @@
     ("/reasoning" . "Select thinking level")
     ("/queue" . "Show queued prompts")
     ("/restart" . "Restart this Pi process")
+    ("/reload" . "Restart Pi RPC and reload extensions/resources")
     ("/stop" . "Stop and clear the queue")
     ("/doctor" . "Show connection details")
     ("/help" . "Show commands"))
@@ -335,7 +336,7 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                (<= end (point-max)))
           (list (emacs-pi-input-beginning) end
                 (append '("/new" "/resume" "/model" "/thinking"
-                          "/reasoning" "/queue" "/restart" "/stop"
+                          "/reasoning" "/queue" "/restart" "/reload" "/stop"
                           "/doctor" "/help")
                         (mapcar (lambda (item)
                                   (concat "/" (emacs-pi--jget item "name")))
@@ -388,6 +389,7 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                                      ("/reasoning" . emacs-pi-select-thinking)
                                      ("/queue" . emacs-pi-show-queue)
                                      ("/restart" . emacs-pi-restart)
+                                     ("/reload" . emacs-pi-reload)
                                      ("/stop" . emacs-pi-stop)
                                      ("/doctor" . emacs-pi-doctor)
                                      ("/help" . emacs-pi-help)))))

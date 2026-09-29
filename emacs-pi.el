@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.7
+;; Version: 0.2.8
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -316,6 +316,15 @@
   (interactive)
   (emacs-pi-session-restart (emacs-pi--require-session)))
 
+(defun emacs-pi-reload ()
+  "Reload Pi extensions and resources by restarting the idle RPC process."
+  (interactive)
+  (let ((session (emacs-pi--require-session)))
+    (unless (and (eq (emacs-pi-session-phase session) 'ready)
+                 (not (emacs-pi-session-running session)))
+      (user-error "Wait for Pi to become idle before /reload"))
+    (emacs-pi-session-restart session)))
+
 (defun emacs-pi-shutdown ()
   "Shut down the Pi process while leaving the transcript visible."
   (interactive)
@@ -411,7 +420,8 @@
   (with-help-window "*emacs-pi-help*"
     (princ "emacs-pi commands\n\n")
     (princ "/new  /resume  /model  /thinking  /reasoning\n")
-    (princ "/queue  /restart  /stop  /doctor  /help\n\n")
+    (princ "/queue  /restart  /reload  /stop  /doctor  /help\n\n")
+    (princ "/reload restarts the RPC process to reload extensions and resources.\n")
     (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
     (princ "C-c C-l queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
     (princ "i focus input from history · C-a stay after You>\n")
