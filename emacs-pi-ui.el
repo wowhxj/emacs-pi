@@ -22,6 +22,7 @@
 (declare-function emacs-pi-switch-chat "emacs-pi")
 (declare-function emacs-pi-quit "emacs-pi")
 (declare-function emacs-pi-input-completion-at-point "emacs-pi-input")
+(declare-function emacs-pi-complete "emacs-pi-input")
 (declare-function emacs-pi-paste "emacs-pi-input")
 (defvar emacs-pi-show-thinking)
 (defvar emacs-pi--chats)
@@ -62,6 +63,7 @@
     (define-key map (kbd "M-p") #'emacs-pi-previous-prompt)
     (define-key map (kbd "M-n") #'emacs-pi-next-prompt)
     (define-key map (kbd "TAB") #'emacs-pi-ui-tab)
+    (define-key map (kbd "M-TAB") #'emacs-pi-complete)
     (define-key map (kbd "i") #'emacs-pi-ui-focus-or-insert)
     (define-key map (kbd "C-a") #'emacs-pi-ui-beginning-of-line)
     map)
@@ -137,11 +139,11 @@
     (emacs-pi-send)))
 
 (defun emacs-pi-ui-tab ()
-  "Toggle a process heading or complete composer text."
+  "Toggle a process heading or choose prompt completion in the minibuffer."
   (interactive)
   (if (emacs-pi-ui--process-at-point)
       (emacs-pi-ui-toggle-process)
-    (completion-at-point)))
+    (emacs-pi-complete)))
 
 (defun emacs-pi-ui--state ()
   "Return Pi's current activity for the ordinary mode line."
@@ -277,16 +279,29 @@
     (unless (string-empty-p content)
       (truncate-string-to-width content 4000 nil nil "…"))))
 
+(defun emacs-pi-ui--visible-message-text (message text)
+  "Hide appended reference context in displayed user MESSAGE TEXT."
+  (if (equal (emacs-pi--jget message "role") "user")
+      (if-let* ((boundary (string-match
+                           (regexp-quote emacs-pi--session-reference-boundary)
+                           text)))
+          (substring text 0 boundary)
+        text)
+    text))
+
 (defun emacs-pi-ui--insert-blocks (message session &optional final-only)
   "Insert MESSAGE content; FINAL-ONLY skips intermediate steps."
   (let ((content (emacs-pi--jget message "content")))
     (cond
-     ((stringp content) (insert (emacs-pi-ui--markdown content)))
+     ((stringp content)
+      (insert (emacs-pi-ui--markdown
+               (emacs-pi-ui--visible-message-text message content))))
      ((vectorp content)
       (dolist (block (append content nil))
         (pcase (emacs-pi--jget block "type")
           ("text" (insert (emacs-pi-ui--markdown
-                            (or (emacs-pi--jget block "text") ""))))
+                            (emacs-pi-ui--visible-message-text
+                             message (or (emacs-pi--jget block "text") "")))))
           ("thinking"
            (when (and (not final-only)
                       (boundp 'emacs-pi-show-thinking) emacs-pi-show-thinking)

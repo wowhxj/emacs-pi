@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.4
+;; Version: 0.2.5
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -345,9 +345,9 @@
     (princ "C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
     (princ "i focus input from history · C-a stay after You>\n")
     (princ "RET/TAB on a Process or tool heading toggles its steps\n")
-    (princ "M-p/M-n prompt history · TAB path/command completion\n\n")
+    (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n\n")
     (princ "M-x emacs-pi-attach-image adds a PNG/JPEG to the next prompt.\n")
-    (princ "@path is a path hint; Pi may use its tools to inspect the file.\n")))
+    (princ "@path is a path hint; @session includes saved dialogue context.\n")))
 
 (defun emacs-pi-select-model ()
   "Select an available provider/model for this Pi chat."

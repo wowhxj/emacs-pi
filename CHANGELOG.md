@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 — 2026-09-29
+
+- `@` 文件、目录和已保存 session，以及 `/` 命令改用 minibuffer 选择；兼容 Vertico/Orderless 和 Emacs 原生补全。
+- `@session` 发送时附加所选会话当前分支的有界对话上下文，聊天界面保留简短引用。
+
 ## 0.2.0 — 2026-09-29
 
 - 在 mode-line 显示 Pi 运行、工具与空闲状态；顶部显示 Pi 报告的当前 context 用量和窗口上限。

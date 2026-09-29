@@ -14,6 +14,10 @@
 When nil, use Pi's environment or default agent directory."
   :type '(choice (const nil) directory) :group 'emacs-pi)
 
+(defcustom emacs-pi-session-reference-max-chars 32000
+  "Approximate total dialogue characters added for @session references."
+  :type 'integer :group 'emacs-pi)
+
 (defvar emacs-pi-history--cache (make-hash-table :test #'equal)
   "Session previews keyed by path and file size/mtime.")
 
@@ -118,6 +122,71 @@ This is a read-only local index; it never edits Pi's session files."
     (sort records
           (lambda (a b) (time-less-p (plist-get b :modified)
                                      (plist-get a :modified))))))
+
+(defun emacs-pi-history-session-excerpt (record max-chars)
+  "Return the latest active-branch dialogue in RECORD, up to MAX-CHARS.
+Only user and assistant text and Pi's own summaries are included."
+  (let* ((max-chars (max 1 max-chars))
+         (path (plist-get record :path))
+         (size (and path (file-attributes path))))
+    (unless size (user-error "Referenced Pi session is no longer available"))
+    (when (> (file-attribute-size size) (* 64 1024 1024))
+      (user-error "Referenced Pi session exceeds the 64 MiB reading limit"))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (goto-char (point-min))
+      (let (entries leaf)
+        (while (not (eobp))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (unless (string-empty-p line)
+              (condition-case nil
+                  (let* ((entry (emacs-pi--jparse line))
+                         (kind (emacs-pi--jget entry "type"))
+                         (id (emacs-pi--jget entry "id"))
+                         (message (emacs-pi--jget entry "message"))
+                         (role (emacs-pi--jget message "role"))
+                         (text (pcase kind
+                                 ("message"
+                                  (when (member role '("user" "assistant"))
+                                    (emacs-pi--message-text message)))
+                                 ((or "compaction" "branch_summary")
+                                  (emacs-pi--jget entry "summary")))))
+                    (when (and (stringp id) (not (equal kind "session")))
+                      (setq leaf id)
+                      (push (emacs-pi--jobject
+                             "id" id "parentId" (emacs-pi--jget entry "parentId")
+                             "text" (when (and (stringp text)
+                                               (not (string-empty-p text)))
+                                      (if (> (length text) max-chars)
+                                          (substring text (- (length text) max-chars))
+                                        text))
+                             "role" (cond ((equal kind "compaction") "Summary")
+                                          ((equal kind "branch_summary")
+                                           "Branch summary")
+                                          ((equal role "user") "User")
+                                          ((equal role "assistant") "Pi")))
+                            entries)))
+                (error nil))))
+          (forward-line 1))
+        (let* ((branch (emacs-pi-history-active-branch
+                        (vconcat (nreverse entries)) leaf))
+               (lines (when (plist-get branch :ok)
+                        (delq nil
+                              (mapcar (lambda (entry)
+                                        (when-let* ((text (emacs-pi--jget
+                                                           entry "text")))
+                                          (format "%s: %s"
+                                                  (emacs-pi--jget entry "role")
+                                                  text)))
+                                      (plist-get branch :entries)))))
+               (dialogue (string-join lines "\n\n")))
+          (unless (and lines (not (string-empty-p dialogue)))
+            (user-error "Referenced Pi session has no readable dialogue"))
+          (if (> (length dialogue) max-chars)
+              (concat "[Earlier dialogue omitted]\n"
+                      (substring dialogue (- (length dialogue) max-chars)))
+            dialogue))))))
 
 (provide 'emacs-pi-history)
 ;;; emacs-pi-history.el ends here

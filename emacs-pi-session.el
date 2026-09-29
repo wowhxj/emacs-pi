@@ -229,8 +229,10 @@
          (funcall (emacs-pi-session-on-extension session) session event)))
       (_ nil))))
 
-(defun emacs-pi-session-submit (session text &optional images behavior callback)
-  "Send TEXT and IMAGES to SESSION with BEHAVIOR; call CALLBACK."
+(defun emacs-pi-session-submit (session text &optional images behavior
+                                      callback display-text)
+  "Send TEXT and IMAGES to SESSION with BEHAVIOR; call CALLBACK.
+DISPLAY-TEXT is the compact prompt shown in the header."
   (unless (eq (emacs-pi-session-phase session) 'ready)
     (user-error "Pi chat is not ready"))
   (let ((args (emacs-pi--jobject "message" text)))
@@ -246,7 +248,7 @@
                args))
     (when (or behavior (emacs-pi-session-running session))
       (puthash "streamingBehavior" (or behavior "followUp") args))
-    (setf (emacs-pi-session-last-prompt session) text)
+    (setf (emacs-pi-session-last-prompt session) (or display-text text))
     (emacs-pi-session--changed session 'status)
     (emacs-pi-rpc-request (emacs-pi-session-connection session)
                           "prompt" args (or callback #'ignore) 30)))

@@ -9,6 +9,10 @@
 (require 'json)
 (require 'subr-x)
 
+(defconst emacs-pi--session-reference-boundary
+  "\n\n<emacs-pi-session-references>\n"
+  "Marker before client-expanded session context in a user message.")
+
 (defun emacs-pi--jget (object key &optional default)
   "Read KEY from JSON OBJECT, returning DEFAULT when absent."
   (if (hash-table-p object) (gethash key object default) default))

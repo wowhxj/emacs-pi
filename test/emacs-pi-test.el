@@ -472,5 +472,124 @@
     (should (equal (emacs-pi--jget state "type") "tool_execution_end"))
     (should (equal (emacs-pi-ui--tool-result-text state) "result body"))))
 
+(ert-deftest emacs-pi-minibuffer-completion-works-with-native-styles ()
+  (let* ((root (make-temp-file "emacs-pi-complete-" t))
+         (file (expand-file-name "alpha file.el" root))
+         (session (make-emacs-pi-session :root (file-name-as-directory root)
+                                         :client-id "completion-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session))
+         (record (list :id "saved-123" :name "Earlier work"
+                       :cwd root :preview "First prompt")))
+    (unwind-protect
+        (progn
+          (with-temp-file file (insert "example"))
+          (with-current-buffer buffer
+            (let ((completion-styles '(basic)))
+              (emacs-pi-input-set "Read @alpha")
+              (cl-letf (((symbol-function 'emacs-pi-history-list)
+                         (lambda (&optional _root) (list record)))
+                        ((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest args)
+                           (should (equal (nth 2 args) "alpha"))
+                           (should (memq 'substring completion-styles))
+                           (should (completion-all-completions
+                                    "alpha" choices nil 5))
+                           (car (cl-find-if
+                                 (lambda (item)
+                                   (string-match-p "alpha file.el" (car item)))
+                                 choices)))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text)
+                             "Read @\"alpha file.el\""))
+              (emacs-pi-input-set "Use @")
+              (cl-letf (((symbol-function 'emacs-pi-history-list)
+                         (lambda (&optional _root) (list record)))
+                        ((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _args)
+                           (car (cl-find-if
+                                 (lambda (item)
+                                   (string-suffix-p "[session]" (car item)))
+                                 choices)))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text)
+                             "Use @[Earlier work](pi-session:saved-123)"))
+              (emacs-pi-input-set "/de")
+              (setf (emacs-pi-session-commands session)
+                    (list (emacs-pi--jobject "name" "demo"
+                                             "description" "Demo command")))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _args)
+                           (car (assoc "/demo  — Demo command" choices)))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text) "/demo")))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-session-reference-sends-active-dialogue ()
+  (let* ((root (make-temp-file "emacs-pi-reference-" t))
+         (file (expand-file-name "saved.jsonl" root))
+         (emacs-pi-session-directory root)
+         (emacs-pi-executable (expand-file-name
+                               "test/fake-pi.py"
+                               (file-name-directory (locate-library "emacs-pi"))))
+         (buffer nil)
+         (compact "Compare @[Earlier work](pi-session:saved-123)"))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (dolist (spec '(("a" nil "user" "Initial question")
+                            ("b" "a" "assistant" "First answer")
+                            ("c" "b" "user" "Abandoned branch")
+                            ("d" "b" "user" "Current question")
+                            ("e" "d" "assistant" "Current answer")))
+              (insert (emacs-pi--jencode
+                       (emacs-pi--jobject
+                        "type" "message" "id" (nth 0 spec)
+                        "parentId" (or (nth 1 spec) :null)
+                        "message" (emacs-pi--jobject
+                                   "role" (nth 2 spec)
+                                   "content" (nth 3 spec)))) "\n"))
+            (insert (emacs-pi--jencode
+                     (emacs-pi--jobject "type" "session" "id" "saved-123"
+                                          "cwd" root)) "\n")
+            (insert (emacs-pi--jencode
+                     (emacs-pi--jobject "type" "session_info"
+                                          "name" "Earlier work")) "\n"))
+          (setq buffer (emacs-pi--open root))
+          (let ((session (with-current-buffer buffer emacs-pi--session)))
+            (should (emacs-pi-test--wait
+                     (lambda () (eq (emacs-pi-session-phase session) 'ready))))
+            (with-current-buffer buffer
+              (emacs-pi-input-set compact)
+              (emacs-pi-send))
+            (should (emacs-pi-test--wait
+                     (lambda () (= (length (emacs-pi-session-messages session)) 2))))
+            (let* ((user (car (emacs-pi-session-messages session)))
+                   (sent (emacs-pi--message-text user)))
+              (should (equal (emacs-pi-session-last-prompt session) compact))
+              (should (string-match-p "Current answer" sent))
+              (should (string-match-p "Initial question" sent))
+              (should-not (string-match-p "Abandoned branch" sent))
+              (should (equal (emacs-pi-ui--visible-message-text user sent)
+                             compact)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-missing-session-reference-preserves-draft ()
+  (let* ((root (make-temp-file "emacs-pi-missing-reference-" t))
+         (emacs-pi-session-directory root)
+         (session (make-emacs-pi-session :root root :client-id "missing-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session))
+         (draft "See @[Missing](pi-session:not-found)"))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set draft)
+          (should-error (emacs-pi-send) :type 'user-error)
+          (should (equal (emacs-pi-input-text) draft)))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (provide 'emacs-pi-test)
 ;;; emacs-pi-test.el ends here

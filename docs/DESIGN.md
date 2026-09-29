@@ -202,7 +202,7 @@ status：sending / accepted / rejected / uncertain。不能按文字相同来判
 | `emacs-pi-rpc-reply CONN OBJECT` | 发送 extension_ui_response，不加入请求表 |
 | `emacs-pi-rpc-close CONN` | 幂等，EOF 后限时结束进程，清理请求与 timer |
 | `emacs-pi-session-create ROOT OPTIONS ON-CHANGE ON-EXTENSION` | 返回 session，建立回调，异步握手 |
-| `emacs-pi-session-submit SESSION DRAFT-SNAPSHOT BEHAVIOR CALLBACK` | BEHAVIOR 为 normal/follow-up/steer；只有这里决定协议请求 |
+| `emacs-pi-session-submit SESSION TEXT &optional IMAGES BEHAVIOR CALLBACK DISPLAY-TEXT` | BEHAVIOR 为 normal/follow-up/steer；DISPLAY-TEXT 保留简短引用供 UI 展示；只有这里决定协议请求 |
 | `emacs-pi-session-stop SESSION CLEAR-QUEUE-P CALLBACK` | 停止全部或只停止当前执行 |
 | `emacs-pi-session-restart SESSION CALLBACK` | 新代次、新进程，恢复相同 session-file；不重发 |
 | `emacs-pi-session-handle-event SESSION EVENT` | 校验并更新状态，发出有限类别 change 通知 |
@@ -470,7 +470,8 @@ since 不存在错误时完整刷新一次；失败后保留当前可读界面�
 底部 editable-field，历史只读；RET/C-c C-c 发送，S-RET 换行。
 M-p/M-n 浏览该聊天用户输入历史，首次上翻保存当前草稿与附件，回到末尾恢复。
 `C-c C-i` 始终聚焦输入框；历史区域的 `i` 也聚焦，输入区域普通 i 正常输入。
-`s-a` 只选择当前草稿，不选择整个聊天；TAB 走 completion-at-point。
+`s-a` 只选择当前草稿，不选择整个聊天；输入区的 TAB/M-TAB 通过 `completing-read` 在 minibuffer 选择 `@` 文件、目录、session 或 `/` 命令。安装 Vertico/Orderless 时尊重用户配置，未安装时使用原生补全并允许子串查找。过程标题上的 TAB 仍切换折叠。
+Pi RPC 不解析 session 引用；客户端发送前把 `@[标题](pi-session:ID)` 所指的本地 session 当前分支对话附加到消息，并限制附加长度。界面仅显示简短引用；附加文本作为 Pi 消息的一部分被持久化。
 不设置全局 F6，由 README 给用户可选绑定示例。
 
 ### 7.2 发送事务步骤

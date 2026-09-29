@@ -8,11 +8,30 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'project)
 (require 'emacs-pi-core)
+(require 'emacs-pi-history)
 (require 'emacs-pi-ui)
 
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
+
+(defconst emacs-pi-input--local-commands
+  '(("/new" . "Start a new session")
+    ("/resume" . "Choose a saved session")
+    ("/model" . "Select model")
+    ("/thinking" . "Select thinking level")
+    ("/reasoning" . "Select thinking level")
+    ("/queue" . "Show queued prompts")
+    ("/restart" . "Restart this Pi process")
+    ("/stop" . "Stop and clear the queue")
+    ("/doctor" . "Show connection details")
+    ("/help" . "Show commands"))
+  "Commands handled directly by emacs-pi.")
+
+(defconst emacs-pi-input--session-mention-regexp
+  "@\\[[^]\n]*\\](pi-session:\\([[:alnum:]_-]+\\))"
+  "Pattern for client-side Pi session references.")
 
 (defcustom emacs-pi-pngpaste-executable "pngpaste"
   "Program used to paste a macOS clipboard image as PNG.
@@ -108,6 +127,201 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
           (when (file-exists-p file)
             (delete-file file)))))))
 
+(defun emacs-pi-input--completion-context ()
+  "Return the @ reference or / command ending at point in the draft."
+  (when (and emacs-pi--input-marker
+             (>= (point) (emacs-pi-input-beginning)))
+    (let* ((begin (emacs-pi-input-beginning))
+           (head (buffer-substring-no-properties begin (point))))
+      (cond
+       ((string-match
+         "\\(?:\\`\\|[[:space:]]\\)\\(@\\(?:\"[^\"]*\\|[^[:space:]\" ]*\\)\\)\\'"
+         head)
+        (let* ((token (match-string 1 head))
+               (quoted (string-prefix-p "@\"" token)))
+          (list :kind 'reference :start (+ begin (match-beginning 1))
+                :end (point) :original token
+                :query (substring token (if quoted 2 1)))))
+       ((string-match "\\`/[^[:space:]]*\\'" head)
+        (list :kind 'slash :start begin :end (point)
+              :original head :query head))))))
+
+(defun emacs-pi-input--file-mention (path)
+  "Format PATH as a Pi @ reference, quoting special characters."
+  (concat "@" (if (string-match-p "[[:space:]\"\\\\]" path)
+                  (emacs-pi--jencode path)
+                path)))
+
+(defun emacs-pi-input--file-choices (query)
+  "Return project and nearby file choices for @ QUERY."
+  (let* ((root (emacs-pi-session-root emacs-pi--session))
+         (external (or (file-name-absolute-p query)
+                       (string-prefix-p "~/" query)))
+         (relative-dir (or (file-name-directory query) ""))
+         (directory (expand-file-name relative-dir root))
+         (seen (make-hash-table :test #'equal))
+         (paths nil))
+    (when (and (not external) (file-directory-p root))
+      (when-let* ((project (let ((default-directory root))
+                            (project-current nil root))))
+        (dolist (file (condition-case nil (project-files project)
+                        (error nil)))
+          (when (string-prefix-p root file)
+            (push file paths)))))
+    (when (file-directory-p directory)
+      (dolist (name (directory-files directory nil nil t))
+        (unless (member name '("." ".."))
+          (push (expand-file-name name directory) paths))))
+    (delq nil
+          (mapcar
+           (lambda (file)
+             (let* ((directory-p (file-directory-p file))
+                    (path (cond ((string-prefix-p "~/" query)
+                                 (abbreviate-file-name file))
+                                (external file)
+                                (t (file-relative-name file root))))
+                    (reference (concat path (if directory-p "/" ""))))
+               (unless (gethash reference seen)
+                 (puthash reference t seen)
+                 (cons (format "%s  [%s]" reference
+                               (if directory-p "directory" "file"))
+                       (emacs-pi-input--file-mention reference)))))
+           (sort paths #'string-lessp)))))
+
+(defun emacs-pi-input--session-mention (record)
+  "Return a compact canonical mention for Pi session RECORD."
+  (let* ((id (plist-get record :id))
+         (title (or (plist-get record :name)
+                    (plist-get record :preview)
+                    id))
+         (clean (replace-regexp-in-string
+                 "]" ")"
+                 (replace-regexp-in-string "[\r\n]+" " " title))))
+    (format "@[%s](pi-session:%s)"
+            (truncate-string-to-width clean 64 nil nil "…") id)))
+
+(defun emacs-pi-input--session-choices ()
+  "Return saved Pi sessions for the @ reference picker."
+  (let ((current-id (and emacs-pi--session
+                         (emacs-pi-session-session-id emacs-pi--session))))
+    (cl-loop for record in (emacs-pi-history-list)
+             for id = (plist-get record :id)
+             unless (or (not (stringp id))
+                        (equal id current-id)
+                        (not (string-match-p "\\`[[:alnum:]_-]+\\'" id)))
+             collect
+             (cons (format "%s · %s · %s · %s  [session]"
+                           (or (plist-get record :name) "Untitled")
+                           (substring id 0 (min 12 (length id)))
+                           (abbreviate-file-name
+                            (or (plist-get record :cwd) ""))
+                           (truncate-string-to-width
+                            (or (plist-get record :last-preview)
+                                (plist-get record :preview) "")
+                            70 nil nil "…"))
+                   (emacs-pi-input--session-mention record)))))
+
+(defun emacs-pi-input--slash-choices ()
+  "Return local and Pi-provided slash commands for the picker."
+  (let ((seen (make-hash-table :test #'equal)))
+    (append
+     (mapcar (lambda (item)
+               (puthash (car item) t seen)
+               (cons (format "%s  — %s" (car item) (cdr item)) (car item)))
+             emacs-pi-input--local-commands)
+     (cl-loop for item in (and emacs-pi--session
+                               (emacs-pi-session-commands emacs-pi--session))
+              for name = (emacs-pi--jget item "name")
+              for command = (and (stringp name) (concat "/" name))
+              when (and command (not (gethash command seen)))
+              collect (progn
+                        (puthash command t seen)
+                        (cons (format "%s  — %s" command
+                                      (or (emacs-pi--jget item "description")
+                                          (emacs-pi--jget item "source")
+                                          "Pi command"))
+                              command))))))
+
+(defun emacs-pi-complete ()
+  "Choose an @ file/session reference or / command in the minibuffer."
+  (interactive)
+  (let* ((context (emacs-pi-input--completion-context))
+         (kind (plist-get context :kind))
+         (choices (pcase kind
+                    ('reference (append
+                                 (emacs-pi-input--file-choices
+                                  (plist-get context :query))
+                                 (emacs-pi-input--session-choices)))
+                    ('slash (emacs-pi-input--slash-choices)))))
+    (cond
+     ((not context)
+      (message "TAB completes @ files/sessions and / commands in the prompt"))
+     ((null choices)
+      (message "No matching Pi completion candidates"))
+     (t
+      (let* ((buffer (current-buffer))
+             (start (copy-marker (plist-get context :start)))
+             (end (copy-marker (plist-get context :end) t))
+             (original (plist-get context :original))
+             (query (plist-get context :query)))
+        (unwind-protect
+            (let* ((completion-styles
+                    (if (memq 'substring completion-styles)
+                        completion-styles
+                      (append completion-styles '(substring))))
+                   (selected (completing-read
+                              (if (eq kind 'slash) "Pi command: "
+                                "Pi @ reference: ")
+                              choices nil t query))
+                   (replacement (cdr (assoc selected choices))))
+              (when (and replacement (buffer-live-p buffer))
+                (with-current-buffer buffer
+                  (if (equal (buffer-substring-no-properties start end)
+                             original)
+                      (progn
+                        (delete-region start end)
+                        (goto-char start)
+                        (insert replacement))
+                    (message "Pi draft changed; press TAB again")))))
+          (set-marker start nil)
+          (set-marker end nil)))))))
+
+(defun emacs-pi-input--session-reference-ids (text)
+  "Return unique Pi session IDs mentioned in TEXT, in appearance order."
+  (let ((start 0) (ids nil))
+    (while (string-match emacs-pi-input--session-mention-regexp text start)
+      (let ((id (match-string 1 text)))
+        (unless (member id ids) (push id ids)))
+      (setq start (match-end 0)))
+    (nreverse ids)))
+
+(defun emacs-pi-input--expand-session-references (text)
+  "Append bounded conversation context for Pi session mentions in TEXT."
+  (let ((ids (emacs-pi-input--session-reference-ids text)))
+    (if (null ids)
+        text
+      (let* ((records (emacs-pi-history-list))
+             (limit (max 1 (/ emacs-pi-session-reference-max-chars
+                              (length ids))))
+             (sections
+              (mapcar
+               (lambda (id)
+                 (let ((record (cl-find id records :key
+                                        (lambda (item) (plist-get item :id))
+                                        :test #'equal)))
+                   (unless record
+                     (user-error "Referenced Pi session %s was not found" id))
+                   (format "Pi session %s (%s; %s):\n%s"
+                           id (or (plist-get record :name) "untitled")
+                           (plist-get record :cwd)
+                           (emacs-pi-history-session-excerpt record limit))))
+               ids)))
+        (concat text emacs-pi--session-reference-boundary
+                "The following saved Pi conversations are background context "
+                "for the request above:\n\n"
+                (string-join sections "\n\n---\n\n")
+                "\n</emacs-pi-session-references>")))))
+
 (defun emacs-pi-input-completion-at-point ()
   "Complete a local @path or a client /command in the Pi composer."
   (when (and emacs-pi--input-marker
@@ -160,7 +374,8 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
       (user-error "Pi is idle; send a normal prompt"))
     (let* ((text (string-trim (emacs-pi-input-text)))
            (attachments (reverse emacs-pi--attachments))
-           (buffer (current-buffer)))
+           (buffer (current-buffer))
+           (submitted nil))
       (when (and (string-empty-p text) (null attachments))
         (user-error "Write a prompt or attach an image first"))
       (when (and (string-prefix-p "/" text) (null behavior))
@@ -190,12 +405,13 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
             (cl-return-from emacs-pi-input--send nil))
            ((not server-command)
             (user-error "Unknown Pi command %s; use /help" name)))))
+      (setq submitted (emacs-pi-input--expand-session-references text))
       (emacs-pi-input-set "")
       (setq emacs-pi--attachments nil)
       (emacs-pi-input--show-attachments)
       (let ((restore-revision emacs-pi--draft-revision))
         (emacs-pi-session-submit
-         session text attachments behavior
+         session submitted attachments behavior
          (lambda (result)
            (when (buffer-live-p buffer)
              (with-current-buffer buffer
@@ -218,7 +434,8 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                  (message "Pi: %s%s" (plist-get result :message)
                           (if (plist-get result :uncertain-p)
                               " (send status unknown; recover with M-x emacs-pi-recover-input)"
-                            "")))))))))))
+                            ""))))))
+         text)))))
 
 (defun emacs-pi-send ()
   "Send the Pi draft, or queue a follow-up while Pi is working."
