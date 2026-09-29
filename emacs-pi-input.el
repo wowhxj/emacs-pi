@@ -13,6 +13,9 @@
 (require 'emacs-pi-history)
 (require 'emacs-pi-ui)
 
+(declare-function emacs-pi-ui--image-preview-string "emacs-pi-ui")
+(declare-function emacs-pi-ui-view-image "emacs-pi-ui")
+
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
 
