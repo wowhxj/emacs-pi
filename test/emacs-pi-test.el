@@ -449,6 +449,16 @@
           (setf (emacs-pi-session-running session) t
                 (emacs-pi-session-active-tool session) "read")
           (should (string-match-p "Pi tool: read" (emacs-pi-ui--state)))
+          (emacs-pi-session-handle-event
+           session (emacs-pi--jobject
+                    "type" "queue_update"
+                    "steering" ["Change direction"]
+                    "followUp" ["Summarize" "Add tests"]))
+          (should (string-match-p "\\[S1 F2\\]" (emacs-pi-ui--state)))
+          (emacs-pi-session-handle-event
+           session (emacs-pi--jobject "type" "queue_update"
+                                      "steering" [] "followUp" []))
+          (should-not (string-match-p "\\[S" (emacs-pi-ui--state)))
           (emacs-pi-ui-schedule session nil)
           (should emacs-pi--spinner-timer)
           (setf (emacs-pi-session-running session) nil)
@@ -458,6 +468,66 @@
                 (emacs-pi--jobject "tokens" :null "contextWindow" 128000))
           (should (string-match-p "context: —" (emacs-pi-ui--header))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-counts-and-image-preview ()
+  (let* ((root (make-temp-file "emacs-pi-queue-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "queue-123456" :phase 'ready
+                   :running t :on-change #'emacs-pi--session-change))
+         (chat (emacs-pi-ui-create session))
+         (image (emacs-pi--jobject "name" "diagram.png"
+                                   "mimeType" "image/png" "data" "AA=="))
+         (queue-name "*pi-queue:queue-*"))
+    (unwind-protect
+        (save-window-excursion
+          (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                     (lambda (_connection _command _args callback &rest _)
+                       (funcall callback '(:ok t)))))
+            (emacs-pi-session-submit session "Inspect diagram" (list image)))
+          (emacs-pi-session-handle-event
+           session (emacs-pi--jobject
+                    "type" "queue_update" "steering" []
+                    "followUp" ["Inspect diagram"]))
+          (with-current-buffer chat
+            (should (string-match-p "\\[S0 F1\\]" (emacs-pi-ui--state)))
+            (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (should (string-match-p "Follow-up (1)" (buffer-string)))
+            (should (string-match-p "diagram.png" (buffer-string)))
+            (should (string-match-p "\\[image\\]" (buffer-string))))
+          (emacs-pi-session-handle-event
+           session (emacs-pi--jobject "type" "queue_update"
+                                      "steering" [] "followUp" []))
+          (with-current-buffer queue-name
+            (should (string-match-p "Follow-up (0)" (buffer-string)))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-stop-recovers-queued-images ()
+  (let* ((root (make-temp-file "emacs-pi-queue-recover-" t))
+         (images (list (emacs-pi--jobject "name" "chart.png"
+                                          "mimeType" "image/png" "data" "AA==")))
+         (session (make-emacs-pi-session
+                   :root root :client-id "recover-123456" :phase 'ready
+                   :queue-attachments (make-hash-table :test #'equal)))
+         (chat (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer chat
+          (puthash "Check chart" images
+                   (emacs-pi-session-queue-attachments session))
+          (cl-letf (((symbol-function 'emacs-pi-session-stop)
+                     (lambda (_session _clear callback)
+                       (funcall callback
+                                (list :ok t :cleared
+                                      (emacs-pi--jobject
+                                       "steering" []
+                                       "followUp" ["Check chart"]))))))
+            (emacs-pi-stop))
+          (should (equal (plist-get (car emacs-pi--recovery) :attachments)
+                         images)))
+      (when (buffer-live-p chat) (kill-buffer chat))
       (delete-directory root t))))
 
 (ert-deftest emacs-pi-root-picker-offers-existing-and-new ()

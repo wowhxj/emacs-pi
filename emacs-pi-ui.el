@@ -18,6 +18,7 @@
 (declare-function emacs-pi-previous-prompt "emacs-pi-input")
 (declare-function emacs-pi-next-prompt "emacs-pi-input")
 (declare-function emacs-pi-stop "emacs-pi")
+(declare-function emacs-pi-show-queue "emacs-pi")
 (declare-function emacs-pi-resume "emacs-pi")
 (declare-function emacs-pi-switch-chat "emacs-pi")
 (declare-function emacs-pi-quit "emacs-pi")
@@ -26,6 +27,7 @@
 (declare-function emacs-pi-paste "emacs-pi-input")
 (defvar emacs-pi-show-thinking)
 (defvar emacs-pi--chats)
+(defvar emacs-pi--queue-session)
 
 (defface emacs-pi-user-face '((t :inherit font-lock-keyword-face :weight bold))
   "Face for user labels." :group 'emacs-pi)
@@ -54,6 +56,7 @@
     (define-key map (kbd "S-RET") #'newline)
     (define-key map (kbd "C-c C-s") #'emacs-pi-steer)
     (define-key map (kbd "C-c C-k") #'emacs-pi-stop)
+    (define-key map (kbd "C-c C-l") #'emacs-pi-show-queue)
     (define-key map (kbd "C-c C-r") #'emacs-pi-resume)
     (define-key map (kbd "C-c C-b") #'emacs-pi-switch-chat)
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)
@@ -152,9 +155,13 @@
     (let* ((session emacs-pi--session)
            (running (emacs-pi-session-running session))
            (tool (emacs-pi-session-active-tool session))
-           (phase (emacs-pi-session-phase session)))
+           (phase (emacs-pi-session-phase session))
+           (steering (length (emacs-pi--array-list
+                              (emacs-pi-session-steering session))))
+           (follow-up (length (emacs-pi--array-list
+                               (emacs-pi-session-follow-up session)))))
       (propertize
-       (format " Pi %s%s"
+       (format " Pi %s%s%s"
                (cond ((eq phase 'dead) "disconnected")
                      ((not (eq phase 'ready)) "connecting")
                      ((emacs-pi-session-compacting session) "compacting")
@@ -163,6 +170,9 @@
                      (t "idle"))
                (if running
                    (format " %c" (aref "|/-\\" (mod emacs-pi--spinner-index 4)))
+                 "")
+               (if (or (> steering 0) (> follow-up 0))
+                   (format " [S%d F%d]" steering follow-up)
                  ""))
        'face 'emacs-pi-status-face))))
 
@@ -579,6 +589,12 @@ ACTIVE-P means this is the turn currently being processed by Pi."
   (when emacs-pi--session
     (let* ((session emacs-pi--session)
            (id (emacs-pi-session-client-id session)))
+      (when-let* ((queue (get-buffer
+                          (format "*pi-queue:%s*"
+                                  (substring id 0 (min 6 (length id)))))))
+        (with-current-buffer queue
+          (when (eq emacs-pi--queue-session session)
+            (kill-buffer queue))))
       (when (and (boundp 'emacs-pi--chats)
                  (eq (gethash id emacs-pi--chats) (current-buffer)))
         (remhash id emacs-pi--chats))

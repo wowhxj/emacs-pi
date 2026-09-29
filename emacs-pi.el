@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026 emacs-pi contributors
 ;; Author: emacs-pi contributors
-;; Version: 0.2.6
+;; Version: 0.2.7
 ;; Package-Requires: ((emacs "29.1") (markdown-mode "2.3"))
 ;; Keywords: tools, processes, convenience
 ;; URL: https://github.com/wowhxj/emacs-pi
@@ -39,6 +39,19 @@
 
 (defvar emacs-pi--chats (make-hash-table :test #'equal)
   "Live chat buffers keyed by client identity.")
+(defvar-local emacs-pi--queue-session nil)
+
+(defun emacs-pi--session-change (session change)
+  "Refresh the chat and its queue view after SESSION CHANGE."
+  (emacs-pi-ui-schedule session change)
+  (when (eq (plist-get change :kind) 'status)
+    (when-let* ((buffer (get-buffer
+                         (format "*pi-queue:%s*"
+                                 (substring (emacs-pi-session-client-id session)
+                                            0 6)))))
+      (with-current-buffer buffer
+        (when (eq emacs-pi--queue-session session)
+          (emacs-pi--queue-render session))))))
 
 (defun emacs-pi--show-chat (buffer)
   "Show Pi chat BUFFER in the selected frame's sole window."
@@ -129,7 +142,7 @@
          (session
           (emacs-pi-session-create root emacs-pi-executable args
                                    nil session-file
-                                   #'emacs-pi-ui-schedule
+                                   #'emacs-pi--session-change
                                    #'emacs-pi--extension))
          (buffer (emacs-pi-ui-create session)))
     (puthash (emacs-pi-session-client-id session) buffer emacs-pi--chats)
@@ -264,9 +277,13 @@
 (defun emacs-pi-stop ()
   "Clear queued prompts and stop the current Pi run."
   (interactive)
-  (let ((buffer (current-buffer)))
+  (let* ((buffer (current-buffer))
+         (session (emacs-pi--require-session))
+         (attachments (and (emacs-pi-session-queue-attachments session)
+                           (copy-hash-table
+                            (emacs-pi-session-queue-attachments session)))))
     (emacs-pi-session-stop
-     (emacs-pi--require-session) t
+     session t
      (lambda (result)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
@@ -275,11 +292,14 @@
                           (emacs-pi--array-list (emacs-pi--jget cleared "steering"))
                           (emacs-pi--array-list (emacs-pi--jget cleared "followUp")))))
              (dolist (text texts)
-               (push (list :text text :attachments nil :uncertain nil)
+               (let ((images (and attachments (gethash text attachments))))
+                 (push (list :text text
+                             :attachments (and (listp images) images)
+                             :uncertain nil)
                      emacs-pi--recovery)))))
        (message "Pi stop: %s"
                 (if (plist-get result :ok) "done"
-                  (or (plist-get result :message) "failed")))))))
+                  (or (plist-get result :message) "failed"))))))))
 
 (defun emacs-pi-abort-current ()
   "Stop the current run while retaining queued prompts."
@@ -307,31 +327,82 @@
   (emacs-pi--require-session)
   (kill-buffer (current-buffer)))
 
+(defun emacs-pi--queue-image-preview (image)
+  "Return an inline preview for queued IMAGE when Emacs can display it."
+  (let* ((mime (emacs-pi--jget image "mimeType"))
+         (type (cdr (assoc mime '(("image/png" . png)
+                                  ("image/jpeg" . jpeg)))))
+         (data (emacs-pi--jget image "data")))
+    (when (and (display-images-p) type (stringp data))
+      (condition-case nil
+          (propertize "[image]" 'display
+                      (create-image (base64-decode-string data) type t
+                                    :height 96))
+        (error nil)))))
+
+(defun emacs-pi--queue-render (session)
+  "Render the latest read-only queue snapshot for SESSION."
+  (let ((inhibit-read-only t)
+        (line (line-number-at-pos)))
+    (erase-buffer)
+    (insert (propertize "Pi queue\n" 'face 'bold)
+            "g refresh · q close\n\n")
+    (if (not (emacs-pi-session-queue-known session))
+        (insert "Queue details have not arrived yet.\n")
+      (let* ((steering (emacs-pi--array-list
+                        (emacs-pi-session-steering session)))
+             (follow-up (emacs-pi--array-list
+                         (emacs-pi-session-follow-up session)))
+             (all (append steering follow-up))
+             (attachments (emacs-pi-session-queue-attachments session)))
+        (dolist (group `(("Steering" . ,steering)
+                         ("Follow-up" . ,follow-up)))
+          (insert (format "%s (%d):\n" (car group) (length (cdr group))))
+          (if (cdr group)
+              (cl-loop for item in (cdr group)
+                       for index from 1
+                       do (insert (format "  %d. %s\n" index item))
+                       (let ((images (and attachments
+                                          (gethash item attachments))))
+                         (cond
+                          ((and images
+                                (> (cl-count item all :test #'equal) 1))
+                           (insert "     [identical messages: image association unavailable]\n"))
+                          ((eq images :ambiguous)
+                           (insert "     [image association unavailable]\n"))
+                          ((listp images)
+                           (dolist (image images)
+                             (insert "     "
+                                     (or (emacs-pi--queue-image-preview image)
+                                         "[image]")
+                                     " "
+                                     (or (emacs-pi--jget image "name") "image")
+                                     "\n"))))))
+            (insert "  (empty)\n"))
+          (insert "\n"))))
+    (insert (propertize
+             "Pi RPC currently exposes only whole-queue clear; individual edits, "
+             'face 'shadow)
+            (propertize
+             "reordering and moving between lanes require a Pi RPC queue API.\n"
+             'face 'shadow))
+    (goto-char (point-min))
+    (forward-line (1- line))))
+
 (defun emacs-pi-show-queue ()
-  "Show Pi's latest steering and follow-up queue snapshot."
+  "Show Pi's steering and follow-up queue with known image previews."
   (interactive)
   (let* ((session (emacs-pi--require-session))
          (buffer (get-buffer-create
                   (format "*pi-queue:%s*"
                           (substring (emacs-pi-session-client-id session) 0 6)))))
     (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert "Pi queue\n\n")
-        (if (not (emacs-pi-session-queue-known session))
-            (insert "Queue details have not arrived yet.\n")
-          (dolist (group '(("Steering" . steering) ("Follow-up" . follow-up)))
-            (insert (car group) ":\n")
-            (let ((items (emacs-pi--array-list
-                          (funcall (if (eq (cdr group) 'steering)
-                                       #'emacs-pi-session-steering
-                                     #'emacs-pi-session-follow-up)
-                                   session))))
-              (if items
-                  (dolist (item items) (insert "  • " item "\n"))
-                (insert "  (empty)\n")))
-            (insert "\n")))
-        (special-mode)))
+      (unless (derived-mode-p 'special-mode)
+        (special-mode))
+      (setq-local emacs-pi--queue-session session)
+      (setq-local revert-buffer-function
+                  (lambda (&rest _) (emacs-pi--queue-render session)))
+      (emacs-pi--queue-render session))
     (pop-to-buffer buffer)))
 
 (defun emacs-pi-help ()
@@ -342,7 +413,7 @@
     (princ "/new  /resume  /model  /thinking  /reasoning\n")
     (princ "/queue  /restart  /stop  /doctor  /help\n\n")
     (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
-    (princ "C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
+    (princ "C-c C-l queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
     (princ "i focus input from history · C-a stay after You>\n")
     (princ "RET/TAB on a Process or tool heading toggles its steps\n")
     (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n\n")

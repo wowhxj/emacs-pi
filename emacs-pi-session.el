@@ -13,7 +13,8 @@
 (cl-defstruct emacs-pi-session
   client-id generation root buffer connection session-id session-file name
   phase running compacting waiting model thinking messages active-message
-  tools active-tool context-usage steering follow-up queue-known last-prompt error
+  tools active-tool context-usage steering follow-up queue-known queue-attachments
+  last-prompt error
   commands executable arguments environment on-change on-extension)
 
 (defun emacs-pi-session--changed (session kind &optional data)
@@ -155,6 +156,7 @@
           :client-id (emacs-pi--uuid) :generation 1
           :root (emacs-pi--local-root root) :phase 'starting
           :messages nil :tools (make-hash-table :test #'equal)
+          :queue-attachments (make-hash-table :test #'equal)
           :executable executable :arguments arguments
           :environment environment :session-file session-file
           :on-change on-change :on-extension on-extension)))
@@ -210,6 +212,15 @@
        (setf (emacs-pi-session-steering session) (emacs-pi--jget event "steering")
              (emacs-pi-session-follow-up session) (emacs-pi--jget event "followUp")
              (emacs-pi-session-queue-known session) t)
+       (when-let* ((attachments (emacs-pi-session-queue-attachments session)))
+         (let ((texts (append (emacs-pi--array-list
+                               (emacs-pi-session-steering session))
+                              (emacs-pi--array-list
+                               (emacs-pi-session-follow-up session)))))
+           (maphash (lambda (text _images)
+                      (unless (member text texts)
+                        (remhash text attachments)))
+                    attachments)))
        (emacs-pi-session--changed session 'status))
       ("compaction_start"
        (setf (emacs-pi-session-compacting session) t)
@@ -235,7 +246,16 @@
 DISPLAY-TEXT is the compact prompt shown in the header."
   (unless (eq (emacs-pi-session-phase session) 'ready)
     (user-error "Pi chat is not ready"))
-  (let ((args (emacs-pi--jobject "message" text)))
+  (let* ((args (emacs-pi--jobject "message" text))
+         (queued (and (not (string-prefix-p "/" text))
+                      (or behavior (emacs-pi-session-running session))))
+         (attachments (or (emacs-pi-session-queue-attachments session)
+                          (setf (emacs-pi-session-queue-attachments session)
+                                (make-hash-table :test #'equal)))))
+    (when queued
+      (puthash text (if (gethash text attachments) :ambiguous
+                      (or images :text-only))
+               attachments))
     (when images
       (puthash "images"
                (vconcat
@@ -250,8 +270,19 @@ DISPLAY-TEXT is the compact prompt shown in the header."
       (puthash "streamingBehavior" (or behavior "followUp") args))
     (setf (emacs-pi-session-last-prompt session) (or display-text text))
     (emacs-pi-session--changed session 'status)
-    (emacs-pi-rpc-request (emacs-pi-session-connection session)
-                          "prompt" args (or callback #'ignore) 30)))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "prompt" args
+     (lambda (result)
+       (when (and queued (not (plist-get result :ok))
+                  (not (plist-get result :uncertain-p)))
+         (remhash text attachments))
+       (when (and queued (plist-get result :ok)
+                  (member (emacs-pi--jget (plist-get result :data)
+                                            "disposition")
+                          '("handled" "started")))
+         (remhash text attachments))
+       (when callback (funcall callback result)))
+     30)))
 
 (defun emacs-pi-session-stop (session clear-queue callback)
   "Abort SESSION, clearing queued work when CLEAR-QUEUE is non-nil."
