@@ -270,9 +270,12 @@
   "Insert LABEL with FACE."
   (insert (propertize label 'face face 'read-only t)))
 
-(defun emacs-pi-ui--insert-detail (label detail key)
-  "Insert a collapsed step LABEL with expandable DETAIL under KEY."
-  (insert "  ")
+(defun emacs-pi-ui--insert-detail (label detail key &optional column)
+  "Insert a collapsed step LABEL with expandable DETAIL under KEY.
+When COLUMN is non-nil, align details on following lines to that column."
+  (if (and column (bolp))
+      (insert (make-string column ?\s))
+    (insert "  "))
   (let ((start (point)))
     (insert "▸ " label "\n")
     (let ((body-start (point)))
@@ -300,8 +303,9 @@
         text)
     text))
 
-(defun emacs-pi-ui--insert-blocks (message session &optional final-only)
-  "Insert MESSAGE content; FINAL-ONLY skips intermediate steps."
+(defun emacs-pi-ui--insert-blocks (message session &optional final-only detail-column)
+  "Insert MESSAGE content; FINAL-ONLY skips intermediate steps.
+Align subsequent step headings to DETAIL-COLUMN when non-nil."
   (let ((content (emacs-pi--jget message "content")))
     (cond
      ((stringp content)
@@ -322,7 +326,8 @@
                               100 nil nil "…")))
                (emacs-pi-ui--insert-detail
                 (concat "✻ Thinking: " summary) thought
-                (format "thinking:%d" (cl-incf emacs-pi--detail-index))))))
+                (format "thinking:%d" (cl-incf emacs-pi--detail-index))
+                detail-column))))
           ("toolCall"
            (unless final-only
              (let* ((id (emacs-pi--jget block "id"))
@@ -344,7 +349,8 @@
                (emacs-pi-ui--insert-detail
                 (format "%s %s" (if done (if failed "✗" "✓") "●") name)
                 detail
-                (format "tool:%s" (or id (cl-incf emacs-pi--detail-index)))))))
+                (format "tool:%s" (or id (cl-incf emacs-pi--detail-index)))
+                detail-column))))
           ("image" (insert "[image]"))
           (_ nil)))))))
 
@@ -467,7 +473,8 @@ ACTIVE-P means this is the turn currently being processed by Pi."
         (let ((body-start (point)))
           (dolist (message steps)
             (emacs-pi-ui--insert-label "Pi step: " 'emacs-pi-tool-face)
-            (emacs-pi-ui--insert-blocks message session)
+            (emacs-pi-ui--insert-blocks
+             message session nil (+ (length "Pi step: ") 2))
             (unless (bolp) (insert "\n")))
           (dolist (block thinking)
             (let* ((thought (or (emacs-pi--jget block "thinking") ""))

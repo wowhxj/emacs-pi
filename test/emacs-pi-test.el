@@ -387,6 +387,34 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-process-items-align-with-first-item ()
+  (let* ((root (make-temp-file "emacs-pi-align-" t))
+         (emacs-pi-show-thinking t)
+         (tool-one (emacs-pi--jobject "type" "toolCall" "id" "one"
+                                      "name" "read"))
+         (tool-two (emacs-pi--jobject "type" "toolCall" "id" "two"
+                                      "name" "grep"))
+         (thought (emacs-pi--jobject "type" "thinking"
+                                     "thinking" "Inspecting repository"))
+         (session (make-emacs-pi-session
+                   :root root :client-id "align-123456" :phase 'ready
+                   :running t :tools (make-hash-table :test #'equal)
+                   :messages (list
+                              (emacs-pi--jobject "role" "user"
+                                                 "content" "Inspect")
+                              (emacs-pi--jobject "role" "assistant"
+                                                 "content" (vector tool-one thought tool-two)))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (goto-char (point-min))
+          (should (re-search-forward "^Pi step:   ▸ ● read" nil t))
+          (should (re-search-forward "^           ▸ ✻ Thinking:" nil t))
+          (should (re-search-forward "^           ▸ ● grep" nil t)))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-open-uses-full-window ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
