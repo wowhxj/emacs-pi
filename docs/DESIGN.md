@@ -89,6 +89,7 @@ I10. 历史索引只读；插件不直接改写 Pi JSONL 文件。
 | `emacs-pi-session.el` | 状态更新、发送事务、恢复编排、队列 | core、rpc、history |
 | `emacs-pi-ui.el` | buffer、markers、消息排版、折叠、刷新 | core |
 | `emacs-pi-input.el` | widget、草稿、CAPF、附件、剪贴板 | core |
+| `emacs-pi-queue.el` | 队列暂存编辑、图片预览与写回编排 | core、session、input |
 | `emacs-pi-extension.el` | 扩展请求排队与 Emacs 对话视图 | core |
 | `emacs-pi.el` | 公开命令、配置、注册表、各模块接线 | 上述模块 |
 
@@ -496,7 +497,7 @@ Pi RPC 不解析 session 引用；客户端发送前把 `@[标题](pi-session:ID
 ### 7.3 队列和停止
 
 Pi queue_update 提供 `steering: string[]` 与 `followUp: string[]`，均为完整快照。
-列表显示两组文本和位置，仅提供查看/复制/清空全部；不提供逐条 Edit/Delete/转 steer。
+v0.3.0 的队列窗口可暂存逐条编辑、排序、删除和 steer/follow-up 转换；按 `C-c C-c` 后用 `clear_queue` 与逐条追加写回。Pi 运行中可能同时消费，因此此实现不具备原子性，详见 [队列编辑](QUEUE.md)。
 图片数据无法从队列快照恢复；只知道文本时界面不能声称拿到了完整附件。
 初次 queue-known-p=nil；get_state.pendingMessageCount 可显示“待办 N，详情未同步”。
 收到 queue_update 后 queue-known-p=t。不能用 get_state.pendingMessageCount=0 覆盖更新的队列事件。
@@ -667,7 +668,7 @@ extension input/editor 的 value 是字符串；位图粘贴可显式保存临�
 | emacs-pi-steer | C-c C-s | 运行中 steer |
 | emacs-pi-stop | C-c C-k | 清队列并停止 |
 | emacs-pi-abort-current | M-x | 仅停止当前执行 |
-| emacs-pi-queue | C-c C-l、/queue | 查看/复制/清空全部队列 |
+| emacs-pi-show-queue | C-c C-l、/queue | 查看与暂存队列修改 |
 | emacs-pi-focus-input | C-c C-i；历史区 i | 聚焦输入框 |
 | emacs-pi-paste | s-v、s-V、C-c C-p | 智能粘贴 |
 | emacs-pi-insert-file | M-x | 插入文件路径引用 |

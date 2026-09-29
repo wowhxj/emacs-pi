@@ -79,11 +79,8 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
                                            emacs-pi--attachments) ", "))
                           'face 'shadow)))))
 
-(defun emacs-pi-attach-image (file &optional name)
-  "Attach PNG or JPEG FILE to the next Pi prompt, optionally named NAME."
-  (interactive "fImage file: ")
-  (unless (derived-mode-p 'emacs-pi-chat-mode)
-    (user-error "Not in an emacs-pi chat"))
+(defun emacs-pi-input--image-object (file &optional name)
+  "Read PNG or JPEG FILE into a Pi image object, optionally named NAME."
   (let* ((size (file-attribute-size (file-attributes file))))
     (when (> size (* 10 1024 1024)) (user-error "Image exceeds 10 MiB"))
     (let* ((data (with-temp-buffer
@@ -95,12 +92,18 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
                      ((string-prefix-p (unibyte-string 255 216 255) data)
                       "image/jpeg"))))
     (unless mime (user-error "Only PNG and JPEG images are supported"))
-    (push (emacs-pi--jobject "type" "image" "name"
-                             (or name (file-name-nondirectory file))
-                             "mimeType" mime "data" (base64-encode-string data t))
-          emacs-pi--attachments)
-    (emacs-pi-input--show-attachments)
-    (message "Attached %s" (or name (file-name-nondirectory file))))))
+    (emacs-pi--jobject "type" "image" "name"
+                       (or name (file-name-nondirectory file))
+                       "mimeType" mime "data" (base64-encode-string data t)))))
+
+(defun emacs-pi-attach-image (file &optional name)
+  "Attach PNG or JPEG FILE to the next Pi prompt, optionally named NAME."
+  (interactive "fImage file: ")
+  (unless (derived-mode-p 'emacs-pi-chat-mode)
+    (user-error "Not in an emacs-pi chat"))
+  (push (emacs-pi-input--image-object file name) emacs-pi--attachments)
+  (emacs-pi-input--show-attachments)
+  (message "Attached %s" (or name (file-name-nondirectory file))))
 
 (defun emacs-pi-input--pngpaste-program ()
   "Return a usable pngpaste program, including common GUI Emacs paths."
@@ -396,6 +399,8 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
   (let ((session emacs-pi--session))
     (unless (eq (emacs-pi-session-phase session) 'ready)
       (user-error "Pi chat is not ready"))
+    (when (emacs-pi-session-queue-rewriting session)
+      (user-error "Pi queue is being rewritten; wait for it to finish"))
     (when (and (equal behavior "steer")
                (not (emacs-pi-session-running session)))
       (user-error "Pi is idle; send a normal prompt"))

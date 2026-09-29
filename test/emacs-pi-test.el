@@ -505,6 +505,225 @@
       (when (get-buffer queue-name) (kill-buffer queue-name))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-queue-reorders-and-replays-images ()
+  (let* ((root (make-temp-file "emacs-pi-queue-edit-" t))
+         (attachments (make-hash-table :test #'equal))
+         (image (emacs-pi--jobject "name" "chart.png"
+                                   "mimeType" "image/png" "data" "AA=="))
+         (session (make-emacs-pi-session
+                   :root root :client-id "edit-123456" :generation 1
+                   :phase 'ready
+                   :steering ["one" "two"] :follow-up ["three"]
+                   :queue-known t :queue-attachments attachments
+                   :on-change #'emacs-pi--session-change))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:edit-1*")
+         (commands nil))
+    (puthash "one" :text-only attachments)
+    (puthash "two" (list image) attachments)
+    (puthash "three" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "2. two")
+            (emacs-pi-queue-move-up)
+            (goto-char (point-min))
+            (search-forward "1. three")
+            (emacs-pi-queue-move-to-steering)
+            (should (equal (emacs-pi-queue--desired-snapshot)
+                           '(("two" "one" "three"))))
+            (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                       (lambda (_connection command args callback &rest _)
+                         (push (cons command args) commands)
+                         (if (equal command "clear_queue")
+                             (let ((old (emacs-pi-queue--snapshot session)))
+                               (emacs-pi-session-handle-event
+                                session (emacs-pi--jobject
+                                         "type" "queue_update"
+                                         "steering" [] "followUp" []))
+                               (funcall callback
+                                        (list :ok t :data
+                                              (emacs-pi--jobject
+                                               "steering" (vconcat (car old))
+                                               "followUp" (vconcat (cdr old))))))
+                           (let* ((text (emacs-pi--jget args "message"))
+                                  (steering (emacs-pi--array-list
+                                             (emacs-pi-session-steering session)))
+                                  (follow-up (emacs-pi--array-list
+                                              (emacs-pi-session-follow-up session))))
+                             (if (equal command "steer")
+                                 (setq steering (append steering (list text)))
+                               (setq follow-up (append follow-up (list text))))
+                             (emacs-pi-session-handle-event
+                              session (emacs-pi--jobject
+                                       "type" "queue_update"
+                                       "steering" (vconcat steering)
+                                       "followUp" (vconcat follow-up)))
+                             (funcall callback '(:ok t)))))))
+              (emacs-pi-queue-apply))
+            (should (equal (emacs-pi-queue--snapshot session)
+                           '(("two" "one" "three"))))
+            (should-not (emacs-pi-session-queue-rewriting session))
+            (should-not emacs-pi-queue--dirty)
+            (setq commands (nreverse commands))
+            (should (equal (mapcar #'car commands)
+                           '("clear_queue" "steer" "steer" "steer")))
+            (should (equal (emacs-pi--jget
+                            (aref (emacs-pi--jget (cdadr commands) "images") 0)
+                            "data")
+                           "AA=="))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-refuses-unknown-images-before-clear ()
+  (let* ((root (make-temp-file "emacs-pi-queue-unknown-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "unknown-123456" :phase 'ready
+                   :steering ["old"] :follow-up [] :queue-known t))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:unknow*"))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. old")
+            (emacs-pi-queue-delete)
+            (should-error (emacs-pi-queue-apply) :type 'user-error)))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-editor-stages-text-and-image ()
+  (let* ((root (make-temp-file "emacs-pi-queue-editor-" t))
+         (file (expand-file-name "picture.png" root))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "images-123456" :phase 'ready
+                   :steering ["draft"] :follow-up [] :queue-known t
+                   :queue-attachments attachments))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:images*"))
+    (puthash "draft" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-temp-file file
+            (set-buffer-multibyte nil)
+            (insert (unibyte-string 137 80 78 71 13 10 26 10 0)))
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. draft")
+            (emacs-pi-queue-edit))
+          (let ((editor (get-buffer "*pi-queue-edit:images:1*")))
+            (should editor)
+            (with-current-buffer editor
+              (erase-buffer)
+              (insert "revised")
+              (emacs-pi-queue-edit-add-image file)
+              (should (= (length emacs-pi-queue-edit--images) 1))
+              (emacs-pi-queue-edit-save)))
+          (with-current-buffer queue-name
+            (should emacs-pi-queue--dirty)
+            (should (equal (emacs-pi-queue-item-text
+                            (car emacs-pi-queue--steering))
+                           "revised"))
+            (should (equal (emacs-pi--jget
+                            (car (emacs-pi-queue-item-images
+                                  (car emacs-pi-queue--steering)))
+                            "name")
+                           "picture.png"))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-restores-actual-queue-on-race ()
+  (let* ((root (make-temp-file "emacs-pi-queue-race-" t))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "race-123456" :generation 1
+                   :phase 'ready :steering ["first" "second"]
+                   :follow-up [] :queue-known t
+                   :queue-attachments attachments
+                   :on-change #'emacs-pi--session-change))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:race-1*")
+         (sent nil))
+    (puthash "first" :text-only attachments)
+    (puthash "second" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "2. second")
+            (emacs-pi-queue-move-up)
+            (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                       (lambda (_connection command args callback &rest _)
+                         (if (equal command "clear_queue")
+                             (progn
+                               (emacs-pi-session-handle-event
+                                session (emacs-pi--jobject
+                                         "type" "queue_update"
+                                         "steering" [] "followUp" []))
+                               (funcall callback
+                                        (list :ok t :data
+                                              (emacs-pi--jobject
+                                               "steering" ["second"]
+                                               "followUp" []))))
+                           (push (emacs-pi--jget args "message") sent)
+                           (emacs-pi-session-handle-event
+                            session (emacs-pi--jobject
+                                     "type" "queue_update"
+                                     "steering" (vconcat (reverse sent))
+                                     "followUp" []))
+                           (funcall callback '(:ok t))))))
+              (emacs-pi-queue-apply))
+            (should (equal sent '("second")))
+            (should (equal (emacs-pi-queue--snapshot session)
+                           '(("second"))))
+            (should (string-match-p "Queue changed during apply"
+                                    emacs-pi-queue--notice))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-keeps-staged-edits-when-clear-fails ()
+  (let* ((root (make-temp-file "emacs-pi-queue-clear-fail-" t))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "clearf-123456" :generation 1
+                   :phase 'ready :steering ["original"]
+                   :follow-up [] :queue-known t
+                   :queue-attachments attachments))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:clearf*"))
+    (puthash "original" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. original")
+            (emacs-pi-queue-delete)
+            (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                       (lambda (_connection command _args callback &rest _)
+                         (should (equal command "clear_queue"))
+                         (funcall callback
+                                  '(:ok nil :message "rejected")))))
+              (emacs-pi-queue-apply))
+            (should emacs-pi-queue--dirty)
+            (should-not emacs-pi-queue--busy)
+            (should-not (emacs-pi-session-queue-rewriting session))
+            (should (equal (emacs-pi-queue--snapshot session)
+                           '(("original"))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-stop-recovers-queued-images ()
   (let* ((root (make-temp-file "emacs-pi-queue-recover-" t))
          (images (list (emacs-pi--jobject "name" "chart.png"
@@ -622,10 +841,10 @@
                            (should (memq 'substring completion-styles))
                            (should (completion-all-completions
                                     "alpha" choices nil 5))
-                           (car (cl-find-if
-                                 (lambda (item)
-                                   (string-match-p "alpha file.el" (car item)))
-                                 choices)))))
+                           (cl-find-if
+                            (lambda (candidate)
+                              (string-match-p "alpha file.el" candidate))
+                            (all-completions "alpha" choices)))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
                              "Read @\"alpha file.el\""))
@@ -634,10 +853,10 @@
                          (lambda (&optional _root) (list record)))
                         ((symbol-function 'completing-read)
                          (lambda (_prompt choices &rest _args)
-                           (car (cl-find-if
-                                 (lambda (item)
-                                   (string-suffix-p "[session]" (car item)))
-                                 choices)))))
+                           (cl-find-if
+                            (lambda (candidate)
+                              (string-suffix-p "[session]" candidate))
+                            (all-completions "" choices)))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
                              "Use @[Earlier work](pi-session:saved-123)"))

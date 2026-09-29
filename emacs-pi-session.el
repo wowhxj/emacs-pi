@@ -14,6 +14,7 @@
   client-id generation root buffer connection session-id session-file name
   phase running compacting waiting model thinking messages active-message
   tools active-tool context-usage steering follow-up queue-known queue-attachments
+  queue-rewriting
   last-prompt error
   commands executable arguments environment on-change on-extension)
 
@@ -212,7 +213,8 @@
        (setf (emacs-pi-session-steering session) (emacs-pi--jget event "steering")
              (emacs-pi-session-follow-up session) (emacs-pi--jget event "followUp")
              (emacs-pi-session-queue-known session) t)
-       (when-let* ((attachments (emacs-pi-session-queue-attachments session)))
+       (when-let* ((attachments (and (not (emacs-pi-session-queue-rewriting session))
+                                      (emacs-pi-session-queue-attachments session))))
          (let ((texts (append (emacs-pi--array-list
                                (emacs-pi-session-steering session))
                               (emacs-pi--array-list
@@ -246,6 +248,8 @@
 DISPLAY-TEXT is the compact prompt shown in the header."
   (unless (eq (emacs-pi-session-phase session) 'ready)
     (user-error "Pi chat is not ready"))
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
   (let* ((args (emacs-pi--jobject "message" text))
          (queued (and (not (string-prefix-p "/" text))
                       (or behavior (emacs-pi-session-running session))))
@@ -286,6 +290,8 @@ DISPLAY-TEXT is the compact prompt shown in the header."
 
 (defun emacs-pi-session-stop (session clear-queue callback)
   "Abort SESSION, clearing queued work when CLEAR-QUEUE is non-nil."
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
   (if clear-queue
       (emacs-pi-rpc-request
        (emacs-pi-session-connection session) "clear_queue" nil
@@ -304,6 +310,8 @@ DISPLAY-TEXT is the compact prompt shown in the header."
 
 (defun emacs-pi-session-restart (session)
   "Restart SESSION against its persisted Pi session, without resending."
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
   (cl-incf (emacs-pi-session-generation session))
   (when-let* ((old (emacs-pi-session-connection session)))
     (emacs-pi-rpc-close old))
