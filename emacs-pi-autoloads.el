@@ -54,6 +54,10 @@
 (register-definition-prefixes "emacs-pi-ui" '("emacs-pi-"))
 
 
+;;; Generated autoloads from emacs-pi-queue.el
+
+(register-definition-prefixes "emacs-pi-queue" '("emacs-pi-"))
+
 ;;; End of scraped data
 
 (provide 'emacs-pi-autoloads)
