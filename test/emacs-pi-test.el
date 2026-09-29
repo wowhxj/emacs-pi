@@ -668,6 +668,112 @@
       (when (get-buffer queue-name) (kill-buffer queue-name))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-queue-quit-discards-staged-buffers ()
+  (let* ((root (make-temp-file "emacs-pi-queue-quit-" t))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "quitting-123456" :phase 'ready
+                   :steering ["draft"] :follow-up [] :queue-known t
+                   :queue-attachments attachments))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:quitti*")
+         (editor-name "*pi-queue-edit:quitti:1*"))
+    (puthash "draft" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. draft")
+            (emacs-pi-queue-edit))
+          (with-current-buffer editor-name (insert " changed"))
+          (with-current-buffer queue-name (emacs-pi-queue-quit))
+          (should-not (get-buffer queue-name))
+          (should-not (get-buffer editor-name))
+          (should-not (emacs-pi-session-queue-rewriting session))
+          (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                     (lambda (_connection _command _args callback &rest _)
+                       (funcall callback '(:ok t)))))
+            (emacs-pi-session-submit session "Next prompt")))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (when (get-buffer editor-name) (kill-buffer editor-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-quit-waits-for-rewrite-and-releases-guard ()
+  (let* ((root (make-temp-file "emacs-pi-queue-busy-" t))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "busy-123456" :phase 'ready
+                   :steering ["draft"] :follow-up [] :queue-known t
+                   :queue-attachments attachments))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:busy-1*")
+         (clear-callback nil))
+    (puthash "draft" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. draft")
+            (emacs-pi-queue-delete)
+            (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                       (lambda (_connection command _args callback &rest _)
+                         (should (equal command "clear_queue"))
+                         (setq clear-callback callback))))
+              (emacs-pi-queue-apply))
+            (should-error (emacs-pi-queue-quit) :type 'user-error)
+            (should (get-buffer queue-name))
+            (should-error (emacs-pi-session-submit session "Too soon")
+                          :type 'user-error)
+            (funcall clear-callback
+                     (list :ok t :data (emacs-pi--jobject
+                                        "steering" ["draft"] "followUp" [])))
+            (should-not (emacs-pi-session-queue-rewriting session))
+            (emacs-pi-queue-quit))
+          (should-not (get-buffer queue-name))
+          (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                     (lambda (_connection _command _args callback &rest _)
+                       (funcall callback '(:ok t)))))
+            (emacs-pi-session-submit session "Now allowed")))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-queue-callback-error-releases-guard ()
+  (let* ((root (make-temp-file "emacs-pi-queue-error-" t))
+         (attachments (make-hash-table :test #'equal))
+         (session (make-emacs-pi-session
+                   :root root :client-id "error-123456" :phase 'ready
+                   :steering ["draft"] :follow-up [] :queue-known t
+                   :queue-attachments attachments))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:error-*")
+         (clear-callback nil))
+    (puthash "draft" :text-only attachments)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "1. draft")
+            (emacs-pi-queue-delete)
+            (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                       (lambda (_connection _command _args callback &rest _)
+                         (setq clear-callback callback))))
+              (emacs-pi-queue-apply))
+            (cl-letf (((symbol-function 'emacs-pi-queue--apply-cleared)
+                       (lambda (&rest _) (error "Malformed reply"))))
+              (funcall clear-callback '(:ok t)))
+            (should-not (emacs-pi-session-queue-rewriting session))
+            (should-not emacs-pi-queue--busy)
+            (should (string-match-p "Malformed reply" emacs-pi-queue--notice))
+            (emacs-pi-queue-quit)))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-queue-restores-actual-queue-on-race ()
   (let* ((root (make-temp-file "emacs-pi-queue-race-" t))
          (attachments (make-hash-table :test #'equal))

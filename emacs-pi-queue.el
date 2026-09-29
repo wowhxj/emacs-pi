@@ -40,7 +40,7 @@
     (define-key map (kbd "d") #'emacs-pi-queue-delete)
     (define-key map (kbd "g") #'emacs-pi-queue-refresh)
     (define-key map (kbd "C-c C-c") #'emacs-pi-queue-apply)
-    (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "q") #'emacs-pi-queue-quit)
     map)
   "Keys for the Pi queue list.")
 
@@ -165,7 +165,7 @@
                   (emacs-pi-queue--dirty " · modified locally\n")
                   (t "\n"))
             "RET edit · M-↑/↓ reorder · s/f change lane · d remove\n"
-            "C-c C-c apply · g discard local edits/refresh · q close\n\n")
+            "C-c C-c apply · g discard local edits/refresh · q discard and close\n\n")
     (when emacs-pi-queue--notice
       (insert (propertize (concat emacs-pi-queue--notice "\n\n")
                           'face 'warning)))
@@ -215,6 +215,25 @@
                     (lambda (&rest _) (emacs-pi-queue-refresh))))
       (emacs-pi--queue-render session))
     (pop-to-buffer buffer)))
+
+(defun emacs-pi-queue-quit ()
+  "Discard staged edits and close the queue list and its item editors."
+  (interactive)
+  (when (or emacs-pi-queue--busy
+            (and emacs-pi--queue-session
+                 (emacs-pi-session-queue-rewriting emacs-pi--queue-session)))
+    (user-error "Queue rewrite is in progress; wait for it to finish"))
+  (let ((parent (current-buffer)))
+    (dolist (buffer (buffer-list))
+      (when (with-current-buffer buffer
+              (and (derived-mode-p 'emacs-pi-queue-edit-mode)
+                   (eq emacs-pi-queue-edit--parent parent)))
+        (with-current-buffer buffer (set-buffer-modified-p nil))
+        (kill-buffer buffer)))
+    (if-let* ((window (get-buffer-window parent t)))
+        (quit-window t window)
+      (kill-buffer parent))
+    (when (buffer-live-p parent) (kill-buffer parent))))
 
 (defun emacs-pi-queue-refresh ()
   "Discard staged changes and reload Pi's current queue."
@@ -470,6 +489,21 @@
                       :uncertain uncertain)
                 emacs-pi--recovery))))))
 
+(defun emacs-pi-queue--unexpected-error (buffer session err)
+  "Release SESSION's rewrite guard after unexpected ERR in BUFFER."
+  (setf (emacs-pi-session-queue-rewriting session) nil)
+  (let ((notice (format "Queue rewrite failed in Emacs: %s. Check Pi's queue before retrying."
+                        (error-message-string err))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (setq emacs-pi-queue--busy nil
+              emacs-pi-queue--notice notice)
+        (ignore-errors
+          (emacs-pi-queue--recovery
+           session (emacs-pi-queue--all-items) t)
+          (emacs-pi--queue-render session))))
+    (message "%s" notice)))
+
 (defun emacs-pi-queue--request-args (item)
   "Return RPC arguments for queued ITEM."
   (let ((args (emacs-pi--jobject "message" (emacs-pi-queue-item-text item))))
@@ -494,17 +528,23 @@
            (if (null pending)
                (funcall callback '(:ok t) (nreverse sent) nil)
              (let ((item (car pending)))
-               (emacs-pi-rpc-request
-                (emacs-pi-session-connection session)
-                (if (eq (emacs-pi-queue-item-lane item) 'steering)
-                    "steer" "follow_up")
-                (emacs-pi-queue--request-args item)
-                (lambda (result)
-                  (if (and (plist-get result :ok)
-                           (= generation (emacs-pi-session-generation session)))
-                      (send-next (cdr pending) (cons item sent))
-                    (funcall callback result (nreverse sent) pending)))
-                30)))))
+               (condition-case err
+                   (emacs-pi-rpc-request
+                    (emacs-pi-session-connection session)
+                    (if (eq (emacs-pi-queue-item-lane item) 'steering)
+                        "steer" "follow_up")
+                    (emacs-pi-queue--request-args item)
+                    (lambda (result)
+                      (if (and (plist-get result :ok)
+                               (= generation (emacs-pi-session-generation session)))
+                          (send-next (cdr pending) (cons item sent))
+                        (funcall callback result (nreverse sent) pending)))
+                    30)
+                 (error
+                  (funcall callback
+                           (list :ok nil :message (error-message-string err)
+                                 :uncertain-p t)
+                           (nreverse sent) pending)))))))
       (send-next items nil))))
 
 (defun emacs-pi-queue--match-cleared (actual original)
@@ -554,23 +594,25 @@
     (emacs-pi-queue--send-sequence
      session items
      (lambda (replay-result sent pending)
-       (emacs-pi-queue--finish
-        buffer session replay-result sent pending
-        (cond
-         ((not (plist-get replay-result :ok))
-          (format "Queue rewrite stopped: %s. Unsent items saved for M-x emacs-pi-recover-input."
-                  (or (plist-get replay-result :message) "RPC error")))
-         ((not matched)
-          (if (cl-some (lambda (item)
-                         (not (emacs-pi-queue-item-known item)))
-                       items)
-              "Queue changed during apply; restored Pi's text, but some image data was unavailable."
-            "Queue changed during apply; restored Pi's messages. Refresh and edit again."))
-         ((and (not (emacs-pi-session-running session))
-               (let ((remaining (emacs-pi-queue--snapshot session)))
-                 (or (car remaining) (cdr remaining))))
-          "Queue edits applied. Pi is idle; send a prompt to process pending messages.")
-         (t "Queue edits applied.")))))))
+       (condition-case err
+           (emacs-pi-queue--finish
+            buffer session replay-result sent pending
+            (cond
+             ((not (plist-get replay-result :ok))
+              (format "Queue rewrite stopped: %s. Unsent items saved for M-x emacs-pi-recover-input."
+                      (or (plist-get replay-result :message) "RPC error")))
+             ((not matched)
+              (if (cl-some (lambda (item)
+                             (not (emacs-pi-queue-item-known item)))
+                           items)
+                  "Queue changed during apply; restored Pi's text, but some image data was unavailable."
+                "Queue changed during apply; restored Pi's messages. Refresh and edit again."))
+             ((and (not (emacs-pi-session-running session))
+                   (let ((remaining (emacs-pi-queue--snapshot session)))
+                     (or (car remaining) (cdr remaining))))
+              "Queue edits applied. Pi is idle; send a prompt to process pending messages.")
+             (t "Queue edits applied.")))
+         (error (emacs-pi-queue--unexpected-error buffer session err)))))))
 
 (defun emacs-pi-queue--clear-failed (buffer session original result)
   "Handle failed clear RESULT, preserving staged edits when safe."
@@ -623,16 +665,22 @@
           (puthash text item seen))))
     (setq emacs-pi-queue--busy t)
     (setf (emacs-pi-session-queue-rewriting session) t)
-    (emacs-pi--queue-render session)
-    (emacs-pi-rpc-request
-     (emacs-pi-session-connection session) "clear_queue" nil
-     (lambda (result)
-       (if (plist-get result :ok)
-           (emacs-pi-queue--apply-cleared
-            buffer session base original desired result)
-         (emacs-pi-queue--clear-failed
-          buffer session original result)))
-     30)))
+    (condition-case err
+        (progn
+          (emacs-pi--queue-render session)
+          (emacs-pi-rpc-request
+           (emacs-pi-session-connection session) "clear_queue" nil
+           (lambda (result)
+             (condition-case callback-error
+                 (if (plist-get result :ok)
+                     (emacs-pi-queue--apply-cleared
+                      buffer session base original desired result)
+                   (emacs-pi-queue--clear-failed
+                    buffer session original result))
+               (error (emacs-pi-queue--unexpected-error
+                       buffer session callback-error))))
+           30))
+      (error (emacs-pi-queue--unexpected-error buffer session err)))))
 
 (provide 'emacs-pi-queue)
 ;;; emacs-pi-queue.el ends here
