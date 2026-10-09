@@ -11,7 +11,7 @@ A native Emacs chat interface for [Pi Coding Agent](https://github.com/badlogic/
 - Choose available models and thinking levels; discover Pi extension commands.
 - Queue follow-up prompts or steer a running conversation, and review or edit the queue.
 - Attach PNG/JPEG images, paste clipboard images, and open received images externally.
-- Complete slash commands, project files, and saved sessions from the input area.
+- Complete slash commands, project files, and saved sessions from the input area. `@` completes files and directories; `@session` opens the saved-session picker.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ If Emacs cannot find `pi` on `PATH`, set `emacs-pi-executable` to its absolute p
 
 ## Getting started
 
-Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session or start a new one. Type in the `You>` input area and press `RET` to send. Enter `/` or `@` and press `TAB` to complete commands, files, and sessions.
+Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session or start a new one. Type in the `You>` input area and press `RET` to send. Enter `/` or `@` and press `TAB` to complete commands and paths. Use `@session` followed by `TAB` to pick a saved conversation; choosing one inserts its saved-dialogue reference.
 
 ## Keyboard shortcuts
 

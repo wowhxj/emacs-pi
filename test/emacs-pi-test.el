@@ -1112,6 +1112,11 @@
                            (with-temp-buffer
                              (should (member "deep/nested/"
                                              (all-completions "deep/" choices)))
+                             (let ((annotation
+                                    (plist-get completion-extra-properties
+                                               :annotation-function)))
+                               (should (equal (funcall annotation "deep/nested/")
+                                              "  [directory]")))
                              "deep/nested/"))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text) "Read @deep/nested/"))
@@ -1130,10 +1135,26 @@
                          (lambda (&optional _root) (list record)))
                         ((symbol-function 'completing-read)
                          (lambda (_prompt choices &rest _args)
-                           (cl-find-if
-                            (lambda (candidate)
-                              (string-suffix-p "[session]" candidate))
-                            (all-completions "" choices)))))
+                           (with-temp-buffer
+                             (should-not
+                              (cl-some (lambda (candidate)
+                                         (string-suffix-p "[session]" candidate))
+                                       (all-completions "" choices)))
+                             (should (member "deep/" (all-completions "" choices)))
+                             "deep/"))))
+                (emacs-pi-complete))
+              (should (equal (emacs-pi-input-text) "Use @deep/"))
+              (emacs-pi-input-set "Use @session ")
+              (cl-letf (((symbol-function 'emacs-pi-history-list)
+                         (lambda (&optional _root) (list record)))
+                        ((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest args)
+                           (should (equal (nth 2 args) ""))
+                           (with-temp-buffer
+                             (should (= (length (all-completions "" choices)) 1))
+                             (should (string-suffix-p "[session]"
+                                                      (caar choices)))
+                             (caar choices)))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
                              "Use @[Earlier work](pi-session:saved-123)"))

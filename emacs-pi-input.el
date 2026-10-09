@@ -204,6 +204,16 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
            (head (buffer-substring-no-properties begin (point))))
       (cond
        ((string-match
+         "\\(?:\\`\\|[[:space:]]\\)\\(@session\\(?:[[:space:]]+[^[:space:]]*\\)?\\)\\'"
+         head)
+        (let* ((token (match-string 1 head))
+               (start (+ begin (match-beginning 1)))
+               (query (if (string-match "\\`@session[[:space:]]+\\(.*\\)\\'" token)
+                          (match-string 1 token)
+                        "")))
+          (list :kind 'session :start start
+                :end (point) :original token :query query)))
+       ((string-match
          "\\(?:\\`\\|[[:space:]]\\)\\(@\\(?:\"[^\"]*\\|[^[:space:]\" ]*\\)\\)\\'"
          head)
         (let* ((token (match-string 1 head))
@@ -255,10 +265,6 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                  (cons reference (emacs-pi-input--file-mention reference)))))
            (sort paths #'string-lessp)))))
 
-(defun emacs-pi-input--path-query-p (query)
-  "Return non-nil when QUERY names a path rather than a session."
-  (string-match-p "/" query))
-
 (defun emacs-pi-input--session-mention (record)
   "Return a compact canonical mention for Pi session RECORD."
   (let* ((id (plist-get record :id))
@@ -272,7 +278,7 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
             (truncate-string-to-width clean 64 nil nil "…") id)))
 
 (defun emacs-pi-input--session-choices ()
-  "Return saved Pi sessions for the @ reference picker."
+  "Return saved Pi sessions for the @session picker."
   (let ((current-id (and emacs-pi--session
                          (emacs-pi-session-session-id emacs-pi--session))))
     (cl-loop for record in (emacs-pi-history-list)
@@ -314,24 +320,20 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                               command))))))
 
 (defun emacs-pi-complete ()
-  "Choose an @ file/session reference or / command in the minibuffer."
+  "Choose an @ path, @session reference, or / command in the minibuffer."
   (interactive)
   (let* ((context (emacs-pi-input--completion-context))
          (kind (plist-get context :kind))
          (root (and (eq kind 'reference)
                     (emacs-pi-session-root emacs-pi--session)))
          (query (plist-get context :query))
-         (sessions (and (eq kind 'reference)
-                        (emacs-pi-input--session-choices)))
          (choices (pcase kind
-                    ('reference (append
-                                 (emacs-pi-input--file-choices query root)
-                                 (unless (emacs-pi-input--path-query-p query)
-                                   sessions)))
+                    ('reference (emacs-pi-input--file-choices query root))
+                    ('session (emacs-pi-input--session-choices))
                     ('slash (emacs-pi-input--slash-choices)))))
     (cond
      ((not context)
-      (message "TAB completes @ files/sessions and / commands in the prompt"))
+      (message "TAB completes @ paths, @session references, and / commands"))
      ((null choices)
       (message "No matching Pi completion candidates"))
      (t
@@ -345,9 +347,7 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                   (completion-table-dynamic
                    (lambda (input)
                      (let ((current-choices
-                            (append (emacs-pi-input--file-choices input root)
-                                    (unless (emacs-pi-input--path-query-p input)
-                                      sessions))))
+                            (emacs-pi-input--file-choices input root)))
                        (dolist (choice current-choices)
                          (puthash (car choice) (cdr choice) choice-values))
                        current-choices))
@@ -370,8 +370,10 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                 (append completion-styles '(substring)))))
         (unwind-protect
             (let* ((selected (completing-read
-                              (if (eq kind 'slash) "Pi command: "
-                                "Pi @ reference: ")
+                              (pcase kind
+                                ('slash "Pi command: ")
+                                ('session "Pi session reference: ")
+                                (_ "Pi @ path: "))
                               collection nil t query))
                    (replacement (if (eq kind 'reference)
                                    (gethash selected choice-values)
