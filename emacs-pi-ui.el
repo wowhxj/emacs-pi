@@ -26,10 +26,12 @@
 (declare-function emacs-pi-complete "emacs-pi-input")
 (declare-function emacs-pi-paste "emacs-pi-input")
 (declare-function emacs-pi-input-open-image "emacs-pi-input")
+(declare-function emacs-pi-input--show-attachments "emacs-pi-input")
 (declare-function w32-shell-execute "w32fns")
 (defvar emacs-pi-show-thinking)
 (defvar emacs-pi--chats)
 (defvar emacs-pi--queue-session)
+(defvar emacs-pi--attachment-overlay)
 
 (defface emacs-pi-user-face '((t :inherit font-lock-keyword-face :weight bold))
   "Face for user labels." :group 'emacs-pi)
@@ -609,6 +611,9 @@ ACTIVE-P means this is the turn currently being processed by Pi."
           (setq emacs-pi--user-overlays nil)
           (mapc #'delete-overlay emacs-pi--process-overlays)
           (setq emacs-pi--process-overlays nil)
+          (when emacs-pi--attachment-overlay
+            (delete-overlay emacs-pi--attachment-overlay)
+            (setq emacs-pi--attachment-overlay nil))
           (setq emacs-pi--detail-index 0)
           (save-excursion
             (delete-region (point-min) start)
@@ -620,6 +625,7 @@ ACTIVE-P means this is the turn currently being processed by Pi."
             (when (< (point-min) (marker-position emacs-pi--input-marker))
               (add-text-properties (point-min) (1+ (point-min))
                                    '(front-sticky (read-only)))))
+          (emacs-pi-input--show-attachments)
           (when emacs-pi--input-background
             (move-overlay emacs-pi--input-background
                           (1+ (marker-position emacs-pi--input-marker))

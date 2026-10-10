@@ -89,29 +89,38 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
                 (length (string-trim-right (emacs-pi-input-text))))))
 
 (defun emacs-pi-input--show-attachments ()
-  "Show clickable pending image thumbnails above the composer."
-  (when emacs-pi--attachment-overlay
-    (delete-overlay emacs-pi--attachment-overlay))
-  (when emacs-pi--attachments
-    (setq emacs-pi--attachment-overlay
-          (make-overlay (marker-position emacs-pi--input-marker)
-                        (marker-position emacs-pi--input-marker)))
-    (overlay-put emacs-pi--attachment-overlay 'before-string
-                 (concat
-                  "\n"
-                  (string-join
-                   (cl-loop for image in (reverse emacs-pi--attachments)
-                            for index from 0
-                            collect
-                            (propertize
-                             (concat "  " (emacs-pi-ui--image-preview-string image)
-                                     "  × click to remove")
-                             'emacs-pi-attachment-index index
-                             'keymap emacs-pi-input--image-remove-map
-                             'mouse-face 'highlight
-                             'help-echo "mouse-1: remove; C-c C-o: open in default viewer"))
-                   "\n")
-                  "\n"))))
+  "Show navigable pending image previews above the composer."
+  (let ((inhibit-read-only t))
+    (when emacs-pi--attachment-overlay
+      (delete-region (overlay-start emacs-pi--attachment-overlay)
+                     (overlay-end emacs-pi--attachment-overlay))
+      (delete-overlay emacs-pi--attachment-overlay)
+      (setq emacs-pi--attachment-overlay nil))
+    (when emacs-pi--attachments
+      (let ((start (marker-position emacs-pi--input-marker)))
+        (save-excursion
+          (goto-char start)
+          (insert "\n")
+          (cl-loop for image in (reverse emacs-pi--attachments)
+                   for index from 0
+                   for preview = (emacs-pi-ui--image-preview-string image)
+                   do
+                   (add-text-properties
+                    0 (length preview)
+                    (list 'emacs-pi-attachment-index index
+                          'mouse-face 'highlight
+                          'help-echo "C-c C-o: open; click × to remove")
+                    preview)
+                   (insert
+                    "  " preview "  "
+                    (propertize "×" 'emacs-pi-attachment-index index
+                                'keymap emacs-pi-input--image-remove-map
+                                'mouse-face 'highlight
+                                'help-echo "mouse-1: remove this image")
+                    " click to remove\n"))
+          (insert "\n")
+          (setq emacs-pi--attachment-overlay (make-overlay start (point)))
+          (add-text-properties start (point) '(read-only t)))))))
 
 (defun emacs-pi-input--remove-attachment (index)
   "Remove staged attachment at display INDEX, preserving other images."
@@ -126,17 +135,21 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
   (emacs-pi-input--show-attachments))
 
 (defun emacs-pi-input-remove-image (event)
-  "Remove the staged image clicked with mouse EVENT."
+  "Remove the staged image whose × button was clicked with EVENT."
   (interactive "e")
   (let* ((position (event-start event))
-         (hit (posn-string position))
-         (index (and hit (get-text-property
-                          (cdr hit) 'emacs-pi-attachment-index (car hit))))
+         (buffer-position (posn-point position))
          (window (posn-window position)))
     (unless (window-live-p window)
       (user-error "No Pi chat at this position"))
     (with-current-buffer (window-buffer window)
-      (emacs-pi-input--remove-attachment index))))
+      (let ((index (or (and (integerp buffer-position)
+                            (get-text-property buffer-position
+                                               'emacs-pi-attachment-index))
+                       (and (integerp buffer-position) (> buffer-position 1)
+                            (get-text-property (1- buffer-position)
+                                               'emacs-pi-attachment-index)))))
+        (emacs-pi-input--remove-attachment index)))))
 
 (defun emacs-pi-input-open-image ()
   "View the image at point or choose a staged composer attachment."

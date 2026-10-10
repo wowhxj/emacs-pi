@@ -354,7 +354,8 @@
       (princ "Queue: RET edit · M-up/down reorder · s/f lane · d delete · C-c C-c apply\n")
       (princ "i focus input from history · C-a stay after You>\n")
       (princ "RET/TAB on a Process or tool heading toggles its steps\n")
-      (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n\n")
+      (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n")
+      (princ "C-c C-o opens the image at point; click × to remove an attachment.\n\n")
       (princ "M-x emacs-pi-attach-image adds a PNG/JPEG to the next prompt.\n")
       (princ "@path is a path hint; @session includes saved dialogue context.\n"))))
 
