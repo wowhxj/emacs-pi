@@ -16,6 +16,10 @@
 (declare-function emacs-pi-ui--image-preview-string "emacs-pi-ui")
 (declare-function emacs-pi-ui-view-image "emacs-pi-ui")
 
+;; Optional Orderless setting; path completion binds it locally so matching
+;; remains case-insensitive even when the user's global smart-case is enabled.
+(defvar orderless-smart-case)
+
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
 
@@ -225,6 +229,17 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
         (list :kind 'slash :start begin :end (point)
               :original head :query head))))))
 
+(defun emacs-pi-input--completion-current-input (fallback)
+  "Return the active minibuffer input, or FALLBACK if none is active.
+Completion styles such as Orderless may ask a dynamic table for a reduced
+prefix.  Path candidate generation needs the full minibuffer input to choose
+the directory whose contents should be offered."
+  (if-let* ((window (active-minibuffer-window))
+            ((window-live-p window)))
+      (with-current-buffer (window-buffer window)
+        (minibuffer-contents-no-properties))
+    fallback))
+
 (defun emacs-pi-input--file-mention (path)
   "Format PATH as a Pi @ reference, quoting special characters."
   (concat "@" (if (string-match-p "[[:space:]\"\\\\]" path)
@@ -344,14 +359,27 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
              (choice-values (make-hash-table :test #'equal))
              (collection
               (if (eq kind 'reference)
-                  (completion-table-dynamic
-                   (lambda (input)
-                     (let ((current-choices
-                            (emacs-pi-input--file-choices input root)))
-                       (dolist (choice current-choices)
-                         (puthash (car choice) (cdr choice) choice-values))
-                       current-choices))
-                   t)
+                  (completion-table-with-metadata
+                   (completion-table-dynamic
+                    (lambda (input)
+                      (let* ((path-input
+                              (emacs-pi-input--completion-current-input input))
+                             (current-choices
+                              (emacs-pi-input--file-choices path-input root)))
+                        ;; Keep the directory itself as an exact candidate.
+                        ;; Completion frontends revalidate the selected value
+                        ;; after the input changes from "dir" to "dir/".
+                        (when (and (string-suffix-p "/" path-input)
+                                   (file-directory-p
+                                    (expand-file-name path-input root)))
+                          (push (cons path-input
+                                      (emacs-pi-input--file-mention path-input))
+                                current-choices))
+                        (dolist (choice current-choices)
+                          (puthash (car choice) (cdr choice) choice-values))
+                        current-choices))
+                    t)
+                   '((category . emacs-pi-file)))
                 choices))
              (completion-extra-properties
               (when (eq kind 'reference)
@@ -367,7 +395,14 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
              (completion-styles
               (if (memq 'substring completion-styles)
                   completion-styles
-                (append completion-styles '(substring)))))
+                (append completion-styles '(substring))))
+             (completion-category-overrides
+              (cons `(emacs-pi-file (styles . ,completion-styles))
+                    (assq-delete-all 'emacs-pi-file
+                                     completion-category-overrides)))
+             (completion-ignore-case t)
+             (read-file-name-completion-ignore-case t)
+             (orderless-smart-case nil))
         (unwind-protect
             (let* ((selected (completing-read
                               (pcase kind

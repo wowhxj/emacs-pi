@@ -1071,6 +1071,34 @@
     (should (equal (emacs-pi--jget state "type") "tool_execution_end"))
     (should (equal (emacs-pi-ui--tool-result-text state) "result body"))))
 
+(ert-deftest emacs-pi-path-completion-uses-full-minibuffer-input ()
+  (let* ((root (make-temp-file "emacs-pi-path-query-" t))
+         (target (expand-file-name "deep/nested/target.txt" root))
+         (session (make-emacs-pi-session :root (file-name-as-directory root)
+                                         :client-id "path-query-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory target) t)
+          (with-temp-file target (insert "target"))
+          (with-current-buffer buffer
+            (emacs-pi-input-set "Use @")
+            (cl-letf (((symbol-function
+                        'emacs-pi-input--completion-current-input)
+                       (lambda (_prefix) "deep/nested/target.txt"))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt choices &rest _args)
+                         (with-temp-buffer
+                           (should (member "deep/nested/target.txt"
+                                           (all-completions "" choices)))
+                           "deep/nested/target.txt"))))
+              (emacs-pi-complete))
+            (should (equal (emacs-pi-input-text)
+                           "Use @deep/nested/target.txt"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-minibuffer-completion-works-with-native-styles ()
   (let* ((root (make-temp-file "emacs-pi-complete-" t))
          (file (expand-file-name "alpha file.el" root))
@@ -1095,6 +1123,18 @@
                          (lambda (_prompt choices &rest args)
                            (should (equal (nth 2 args) "alpha"))
                            (should (memq 'substring completion-styles))
+                           (should completion-ignore-case)
+                           (should read-file-name-completion-ignore-case)
+                           (should-not (symbol-value 'orderless-smart-case))
+                           (should (eq (completion-metadata-get
+                                        (completion-metadata "alpha" choices nil)
+                                        'category)
+                                       'emacs-pi-file))
+                           (should (equal
+                                    (alist-get 'styles
+                                               (cdr (assq 'emacs-pi-file
+                                                          completion-category-overrides)))
+                                    completion-styles))
                            (with-temp-buffer
                              (should-not emacs-pi--session)
                              (should (completion-all-completions
@@ -1110,8 +1150,11 @@
               (cl-letf (((symbol-function 'completing-read)
                          (lambda (_prompt choices &rest _args)
                            (with-temp-buffer
+                             (should (member "deep/"
+                                             (all-completions "deep/" choices)))
                              (should (member "deep/nested/"
                                              (all-completions "deep/" choices)))
+                             (should (test-completion "deep/" choices))
                              (let ((annotation
                                     (plist-get completion-extra-properties
                                                :annotation-function)))
@@ -1125,7 +1168,8 @@
                            (with-temp-buffer
                              (should (equal (all-completions
                                              "deep/nested/" choices)
-                                            '("deep/nested/target.txt")))
+                                            '("deep/nested/"
+                                              "deep/nested/target.txt")))
                              "deep/nested/target.txt"))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
@@ -1141,6 +1185,9 @@
                                          (string-suffix-p "[session]" candidate))
                                        (all-completions "" choices)))
                              (should (member "deep/" (all-completions "" choices)))
+                             ;; A frontend may validate the chosen candidate
+                             ;; again after replacing its minibuffer input.
+                             (should (test-completion "deep/" choices))
                              "deep/"))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text) "Use @deep/"))

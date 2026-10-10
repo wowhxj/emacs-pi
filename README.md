@@ -48,7 +48,7 @@ If Emacs cannot find `pi` on `PATH`, set `emacs-pi-executable` to its absolute p
 
 ## Getting started
 
-Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session or start a new one. Type in the `You>` input area and press `RET` to send. Enter `/` or `@` and press `TAB` to complete commands and paths. Use `@session` followed by `TAB` to pick a saved conversation; choosing one inserts its saved-dialogue reference.
+Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session or start a new one. Type in the `You>` input area and press `RET` to send. Enter `/` or `@` and press `TAB` to complete commands and paths. Choose a directory with `RET` to insert it, then press `TAB` again to complete inside it. Use `@session` followed by `TAB` to pick a saved conversation; choosing one inserts its saved-dialogue reference.
 
 ## Keyboard shortcuts
 
