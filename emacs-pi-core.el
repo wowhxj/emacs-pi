@@ -34,7 +34,9 @@
 
 (defun emacs-pi--jencode (object)
   "Encode OBJECT as JSON, preserving false and null."
-  (json-serialize object :false-object :false :null-object :null))
+  (let ((json (json-serialize object :false-object :false :null-object :null)))
+    (if (multibyte-string-p json) json
+      (decode-coding-string json 'utf-8))))
 
 (defun emacs-pi--jtrue-p (value)
   "Return non-nil exactly when JSON VALUE is true."

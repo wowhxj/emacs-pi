@@ -18,6 +18,20 @@
     (should (equal (emacs-pi--jget object "items") []))
     (should (string-match-p "\"no\":false" (emacs-pi--jencode object)))))
 
+(ert-deftest emacs-pi-tool-arguments-render-unicode-context-readably ()
+  (let* ((arguments (emacs-pi--jobject "context" "请检查当前会话"))
+         (call (emacs-pi--jobject "type" "toolCall" "id" "unicode-call"
+                                  "name" "ask_user" "arguments" arguments))
+         (message (emacs-pi--jobject "role" "assistant" "content" (vector call)))
+         (session (make-emacs-pi-session :tools (make-hash-table :test #'equal))))
+    (should (equal (encode-coding-string (emacs-pi--jencode arguments) 'utf-8-unix)
+                   (json-serialize arguments)))
+    (let ((emacs-pi--fold-expanded (make-hash-table :test #'equal)))
+      (with-temp-buffer
+        (emacs-pi-ui--insert-blocks message session)
+        (should (string-match-p "\\\"context\\\":\\\"请检查当前会话\\\""
+                                (buffer-string)))))))
+
 (ert-deftest emacs-pi-malformed-rpc-record-closes-safely ()
   (let* ((receive (generate-new-buffer " *emacs-pi-test-receive*"))
          (connection (make-emacs-pi-rpc
@@ -373,6 +387,7 @@
                      (lambda (_session _instructions completion)
                        (setq callback completion))))
             (emacs-pi-compact "Keep details" t)
+            (should (string-empty-p (emacs-pi-input-text)))
             (emacs-pi-input-set "A newer draft")
             (funcall callback '(:ok t))
             (should (equal (emacs-pi-input-text) "A newer draft"))

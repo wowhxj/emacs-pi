@@ -377,17 +377,14 @@ CLEAR-COMMAND-DRAFT is non-nil when called from the /compact composer command."
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
            (if (plist-get result :ok)
-               (progn
-                 (when (and clear-command-draft
-                            (= draft-revision emacs-pi--draft-revision)
-                            (equal draft (emacs-pi-input-text)))
-                   (emacs-pi-input-set ""))
-                 (message "Pi context compacted"))
+               (message "Pi context compacted")
              (message "Pi compact: %s%s"
                       (plist-get result :message)
                       (if (plist-get result :uncertain-p)
                           " (status unknown; inspect the session before retrying)"
-                        "")))))))))
+                        "")))))))
+    (emacs-pi--clear-command-draft buffer draft draft-revision
+                                   clear-command-draft)))
 
 (defun emacs-pi--clear-command-draft (buffer draft revision clear-command-draft)
   "Clear BUFFER's command draft only if it still matches DRAFT and REVISION."
