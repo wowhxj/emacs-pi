@@ -30,18 +30,31 @@
   "Mouse map for removing a staged image from its preview.")
 
 (defconst emacs-pi-input--local-commands
-  '(("/new" . "Start a new session")
-    ("/resume" . "Choose a saved session")
-    ("/model" . "Select model")
-    ("/thinking" . "Select thinking level")
-    ("/reasoning" . "Select thinking level")
-    ("/queue" . "Show queued prompts")
-    ("/restart" . "Restart this Pi process")
-    ("/reload" . "Restart Pi RPC and reload extensions/resources")
-    ("/stop" . "Stop and clear the queue")
-    ("/doctor" . "Show connection details")
-    ("/help" . "Show commands"))
-  "Commands handled directly by emacs-pi.")
+  '(("/new" "Start a new session" emacs-pi-new-session)
+    ("/resume" "Choose a saved session" emacs-pi-resume)
+    ("/model" "Select model" emacs-pi-select-model)
+    ("/thinking" "Select thinking level" emacs-pi-select-thinking)
+    ("/reasoning" "Select thinking level" emacs-pi-select-thinking)
+    ("/name" "Show or set the session name" emacs-pi-set-session-name t t)
+    ("/session" "Show session statistics" emacs-pi-show-session-stats nil t)
+    ("/compact" "Compact context (optional instructions)" emacs-pi-compact t t)
+    ("/fork" "Fork from a previous user message" emacs-pi-fork-session nil t)
+    ("/clone" "Clone the current session branch" emacs-pi-clone-session nil t)
+    ("/copy" "Copy the last assistant response" emacs-pi-copy-last-response nil t)
+    ("/export" "Export this session to HTML" emacs-pi-export-session t t)
+    ("/queue" "Show queued prompts" emacs-pi-show-queue)
+    ("/restart" "Restart this Pi process" emacs-pi-restart)
+    ("/reload" "Restart Pi RPC and reload extensions/resources" emacs-pi-reload)
+    ("/stop" "Stop and clear the queue" emacs-pi-stop)
+    ("/doctor" "Show connection details" emacs-pi-doctor)
+    ("/quit" "Close this Pi chat" emacs-pi-quit)
+    ("/help" "Show commands" emacs-pi-help))
+  "Client slash commands: NAME, DESCRIPTION, FUNCTION, optional ARGS-P, ASYNC-P.")
+
+(defconst emacs-pi-input--unsupported-cli-commands
+  '("/settings" "/scoped-models" "/login" "/logout" "/llama"
+    "/tree" "/import" "/share" "/bug" "/trust" "/hotkeys" "/changelog")
+  "Pi CLI commands whose full interactive workflows are not exposed over RPC.")
 
 (defconst emacs-pi-input--session-mention-regexp
   "@\\[[^]\n]*\\](pi-session:\\([[:alnum:]_-]+\\))"
@@ -318,8 +331,9 @@ the directory whose contents should be offered."
   (let ((seen (make-hash-table :test #'equal)))
     (append
      (mapcar (lambda (item)
-               (puthash (car item) t seen)
-               (cons (format "%s  — %s" (car item) (cdr item)) (car item)))
+               (puthash (nth 0 item) t seen)
+               (cons (format "%s  — %s" (nth 0 item) (nth 1 item))
+                     (nth 0 item)))
              emacs-pi-input--local-commands)
      (cl-loop for item in (and emacs-pi--session
                                (emacs-pi-session-commands emacs-pi--session))
@@ -473,13 +487,7 @@ the directory whose contents should be offered."
                  (looking-at-p "/[^[:space:]]*\\'"))
                (<= end (point-max)))
           (list (emacs-pi-input-beginning) end
-                (append '("/new" "/resume" "/model" "/thinking"
-                          "/reasoning" "/queue" "/restart" "/reload" "/stop"
-                          "/doctor" "/help")
-                        (mapcar (lambda (item)
-                                  (concat "/" (emacs-pi--jget item "name")))
-                                (and emacs-pi--session
-                                     (emacs-pi-session-commands emacs-pi--session))))
+                (mapcar #'cdr (emacs-pi-input--slash-choices))
                 :exclusive 'no))
          ((re-search-backward "@\\([^[:space:]\n]*\\)"
                               (line-beginning-position) t)
@@ -510,6 +518,8 @@ the directory whose contents should be offered."
       (user-error "Pi chat is not ready"))
     (when (emacs-pi-session-queue-rewriting session)
       (user-error "Pi queue is being rewritten; wait for it to finish"))
+    (when (emacs-pi-session-compacting session)
+      (user-error "Pi context is being compacted; wait for it to finish"))
     (when (and (equal behavior "steer")
                (not (emacs-pi-session-running session)))
       (user-error "Pi is idle; send a normal prompt"))
@@ -521,18 +531,16 @@ the directory whose contents should be offered."
         (user-error "Write a prompt or attach an image first"))
       (when (and (string-prefix-p "/" text) (null behavior))
         (let* ((name (car (split-string text "[[:space:]]+")))
-               (command (cdr (assoc text
-                                   '(("/new" . emacs-pi-new-session)
-                                     ("/resume" . emacs-pi-resume)
-                                     ("/model" . emacs-pi-select-model)
-                                     ("/thinking" . emacs-pi-select-thinking)
-                                     ("/reasoning" . emacs-pi-select-thinking)
-                                     ("/queue" . emacs-pi-show-queue)
-                                     ("/restart" . emacs-pi-restart)
-                                     ("/reload" . emacs-pi-reload)
-                                     ("/stop" . emacs-pi-stop)
-                                     ("/doctor" . emacs-pi-doctor)
-                                     ("/help" . emacs-pi-help)))))
+               (local-command
+                (or (assoc text emacs-pi-input--local-commands)
+                    (let ((by-name (assoc name emacs-pi-input--local-commands)))
+                      (and (nth 3 by-name) by-name))))
+               (command (nth 2 local-command))
+               (instructions
+                (when (and local-command (nth 3 local-command))
+                  (let ((argument (string-trim
+                                   (substring text (length name)))))
+                    (unless (string-empty-p argument) argument))))
                (server-command
                 (seq-some (lambda (item)
                             (equal (concat "/" (emacs-pi--jget item "name")) name))
@@ -541,9 +549,11 @@ the directory whose contents should be offered."
            (command
             (when attachments
               (user-error "Remove or send attached images before a /command"))
-            (funcall command)
-            (when (buffer-live-p buffer)
-              (with-current-buffer buffer (emacs-pi-input-set "")))
+            (if (or (nth 3 local-command) (nth 4 local-command))
+                (funcall command instructions t)
+              (funcall command)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer (emacs-pi-input-set ""))))
             (cl-return-from emacs-pi-input--send nil))
            ((not server-command)
             (user-error "Unknown Pi command %s; use /help" name)))))

@@ -98,7 +98,57 @@
               (emacs-pi-input-set "/de")
               (let ((capf (emacs-pi-input-completion-at-point)))
                 (should capf)
-                (should (member "/demo" (nth 2 capf))))
+                (should (member "/demo" (nth 2 capf)))
+                (dolist (command '("/compact" "/name" "/session" "/copy"
+                                   "/export" "/fork" "/clone" "/quit"))
+                  (should (member command (nth 2 capf)))))
+              (let ((choices (mapcar #'cdr (emacs-pi-input--slash-choices))))
+                (dolist (command '("/compact" "/name" "/session" "/copy"
+                                   "/export" "/fork" "/clone" "/quit" "/demo"))
+                  (should (member command choices))))
+              (emacs-pi-help)
+              (with-current-buffer "*emacs-pi-help*"
+                (dolist (command '("/compact" "/name" "/session" "/copy"
+                                   "/export" "/fork" "/clone" "/quit" "/demo" "/tree"))
+                  (should (save-excursion
+                            (goto-char (point-min))
+                            (search-forward command nil t)))))
+              (let (compact-call)
+                (cl-letf (((symbol-function 'emacs-pi-compact)
+                           (lambda (instructions &optional clear-draft)
+                             (setq compact-call (list instructions clear-draft)))))
+                  (emacs-pi-input-set "/compact Keep code changes")
+                  (emacs-pi-send))
+                (should (equal compact-call '("Keep code changes" t))))
+              (let (name-call fork-call export-call stats-call copy-call clone-call)
+                (cl-letf (((symbol-function 'emacs-pi-set-session-name)
+                           (lambda (name &optional clear-draft)
+                             (setq name-call (list name clear-draft))))
+                          ((symbol-function 'emacs-pi-fork-session)
+                           (lambda (&optional instructions clear-draft)
+                             (setq fork-call (list instructions clear-draft))))
+                          ((symbol-function 'emacs-pi-export-session)
+                           (lambda (path &optional clear-draft)
+                             (setq export-call (list path clear-draft))))
+                          ((symbol-function 'emacs-pi-show-session-stats)
+                           (lambda (&optional instructions clear-draft)
+                             (setq stats-call (list instructions clear-draft))))
+                          ((symbol-function 'emacs-pi-copy-last-response)
+                           (lambda (&optional instructions clear-draft)
+                             (setq copy-call (list instructions clear-draft))))
+                          ((symbol-function 'emacs-pi-clone-session)
+                           (lambda (&optional instructions clear-draft)
+                             (setq clone-call (list instructions clear-draft)))))
+                  (dolist (text '("/name feature-work" "/fork" "/export output.html"
+                                  "/session" "/copy" "/clone"))
+                    (emacs-pi-input-set text)
+                    (emacs-pi-send)))
+                (should (equal name-call '("feature-work" t)))
+                (should (equal fork-call '(nil t)))
+                (should (equal export-call '("output.html" t)))
+                (should (equal stats-call '(nil t)))
+                (should (equal copy-call '(nil t)))
+                (should (equal clone-call '(nil t))))
               (emacs-pi-input-set "/unknown")
               (should-error (emacs-pi-send) :type 'user-error)
               (should (equal (emacs-pi-input-text) "/unknown"))
@@ -109,6 +159,255 @@
             (with-current-buffer chat
               (should (string-empty-p (emacs-pi-input-text))))))
       (when (buffer-live-p chat) (kill-buffer chat))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-session-compact-uses-rpc-command ()
+  (let* ((session (make-emacs-pi-session :phase 'ready :generation 1
+                                         :connection 'fake :running nil
+                                         :compacting nil))
+         (callback-result nil)
+         (captured nil))
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (connection command args callback &optional timeout)
+                 (setq captured (list connection command args timeout))
+                 (funcall callback
+                          (list :ok t :data
+                                (emacs-pi--jobject "summary" "shortened")))
+                 "request-1"))
+              ((symbol-function 'emacs-pi-session--refresh-history)
+               (lambda (_session) nil))
+              ((symbol-function 'emacs-pi-session-refresh-stats)
+               (lambda (_session) nil)))
+      (emacs-pi-session-compact
+       session "Keep implementation details"
+       (lambda (result) (setq callback-result result))))
+    (should (equal (nth 0 captured) 'fake))
+    (should (equal (nth 1 captured) "compact"))
+    (should (equal (emacs-pi--jget (nth 2 captured) "customInstructions")
+                   "Keep implementation details"))
+    (should (= (nth 3 captured) 120))
+    (should (plist-get callback-result :ok))
+    (should-not (emacs-pi-session-compacting session))))
+
+(ert-deftest emacs-pi-session-refresh-state-updates-session-metadata ()
+  (let* ((session (make-emacs-pi-session :generation 1 :connection 'fake
+                                         :session-id "old" :session-file "old.jsonl"))
+         (callback-result nil))
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (_connection command _args callback &optional _timeout)
+                 (should (equal command "get_state"))
+                 (funcall callback
+                          (list :ok t :data
+                                (emacs-pi--jobject
+                                 "sessionId" "new-id"
+                                 "sessionFile" "/tmp/new.jsonl"
+                                 "sessionName" "branch"
+                                 "model" (emacs-pi--jobject "id" "test-model")
+                                 "thinkingLevel" "high"
+                                 "isStreaming" t "isCompacting" :false)))))
+              ((symbol-function 'emacs-pi-session--refresh-history)
+               (lambda (_session) nil))
+              ((symbol-function 'emacs-pi-session-refresh-stats)
+               (lambda (_session) nil)))
+      (emacs-pi-session-refresh-state
+       session (lambda (result) (setq callback-result result))))
+    (should (plist-get callback-result :ok))
+    (should (equal (emacs-pi-session-session-id session) "new-id"))
+    (should (equal (emacs-pi-session-session-file session) "/tmp/new.jsonl"))
+    (should (equal (emacs-pi-session-name session) "branch"))
+    (should (emacs-pi-session-running session))
+    (should-not (emacs-pi-session-compacting session))))
+
+(ert-deftest emacs-pi-session-fork-and-clone-use-rpc-commands ()
+  (let* ((session (make-emacs-pi-session :phase 'ready :generation 1
+                                         :connection 'fake :running nil))
+         (captured nil)
+         (refreshed 0)
+         (callbacks 0))
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (_connection command args callback &optional timeout)
+                 (push (list command args timeout) captured)
+                 (funcall callback
+                          (list :ok t :data
+                                (emacs-pi--jobject "cancelled" :false)))
+                 "request"))
+              ((symbol-function 'emacs-pi-session-refresh-state)
+               (lambda (_session) (cl-incf refreshed))))
+      (emacs-pi-session-fork session "entry-user-1"
+                             (lambda (result)
+                               (should (plist-get result :ok))
+                               (cl-incf callbacks)))
+      (emacs-pi-session-clone session
+                              (lambda (result)
+                                (should (plist-get result :ok))
+                                (cl-incf callbacks))))
+    (should (= callbacks 2))
+    (should (= refreshed 2))
+    (should (equal (mapcar #'car (reverse captured)) '("fork" "clone")))
+    (should (equal (emacs-pi--jget (cadr (car (reverse captured))) "entryId")
+                   "entry-user-1"))
+    (should (equal (mapcar (lambda (item) (nth 2 item))
+                           (reverse captured)) '(120 120)))))
+
+(ert-deftest emacs-pi-fork-command-selects-rpc-entry ()
+  (let* ((root (make-temp-file "emacs-pi-fork-" t))
+         (session (make-emacs-pi-session :root root :client-id "fork-command-123"
+                                         :phase 'ready :generation 1))
+         (buffer (emacs-pi-ui-create session))
+         (requests nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "/fork")
+          (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                     (lambda (_connection command args callback &optional _timeout)
+                       (push (list command args) requests)
+                       (funcall callback
+                                (list :ok t :data
+                                      (if (equal command "get_fork_messages")
+                                          (emacs-pi--jobject
+                                           "messages"
+                                           (vector (emacs-pi--jobject
+                                                    "entryId" "user-entry-7"
+                                                    "text" "Earlier prompt")))
+                                        (emacs-pi--jobject "cancelled" :false))))
+                       "request"))
+                    ((symbol-function 'run-at-time)
+                     (lambda (_time _repeat function &rest args)
+                       (apply function args)))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt choices &rest _args) (caar choices)))
+                    ((symbol-function 'emacs-pi-session-refresh-state)
+                     (lambda (_session) nil)))
+            (emacs-pi-fork-session nil t))
+          (should (string-empty-p (emacs-pi-input-text)))
+          (should (equal (mapcar #'car (reverse requests))
+                         '("get_fork_messages" "fork")))
+          (should (equal (emacs-pi--jget (cadr (cadr (reverse requests)))
+                                         "entryId")
+                         "user-entry-7")))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-simple-rpc-backed-cli-commands-work ()
+  (let* ((root (make-temp-file "emacs-pi-rpc-commands-" t))
+         (session (make-emacs-pi-session :root root :client-id "rpc-commands-123"
+                                         :generation 1 :phase 'ready
+                                         :connection nil))
+         (buffer (emacs-pi-ui-create session))
+         (requests nil)
+         (kill-ring nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+                     (lambda (_connection command args callback &optional _timeout)
+                       (push (list command args) requests)
+                       (funcall callback
+                                (list :ok t :data
+                                      (pcase command
+                                        ("get_session_stats"
+                                         (emacs-pi--jobject
+                                          "userMessages" 2 "assistantMessages" 2
+                                          "toolCalls" 1 "cost" 0.5
+                                          "sessionFile" "/tmp/session.jsonl"
+                                          "tokens" (emacs-pi--jobject "total" 99)
+                                          "contextUsage"
+                                          (emacs-pi--jobject "tokens" 50
+                                                             "contextWindow" 100
+                                                             "percent" 50)))
+                                        ("get_last_assistant_text"
+                                         (emacs-pi--jobject "text" "copied response"))
+                                        ("export_html"
+                                         (emacs-pi--jobject "path" "/tmp/export.html"))
+                                        (_ (emacs-pi--jobject))))))))
+            (emacs-pi-set-session-name "feature-work")
+            (emacs-pi-show-session-stats)
+            (emacs-pi-copy-last-response)
+            (emacs-pi-export-session "out.html"))
+          (should (equal (emacs-pi-session-name session) "feature-work"))
+          (should (equal (car kill-ring) "copied response"))
+          (with-current-buffer "*emacs-pi-session*"
+            (should (search-forward "Context: 50 / 100 (50%)" nil t)))
+          (let ((ordered (reverse requests)))
+            (should (equal (mapcar #'car ordered)
+                           '("set_session_name" "get_session_stats"
+                             "get_last_assistant_text" "export_html")))
+            (should (equal (emacs-pi--jget (cadr (nth 3 ordered)) "outputPath")
+                           (expand-file-name "out.html" root)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (when (get-buffer "*emacs-pi-session*")
+        (kill-buffer "*emacs-pi-session*"))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-compact-slash-command-round-trips-rpc ()
+  (let* ((root (make-temp-file "emacs-pi-compact-rpc-" t))
+         (emacs-pi-executable (expand-file-name "test/fake-pi.py"
+                                               (file-name-directory
+                                                (locate-library "emacs-pi"))))
+         (chat (emacs-pi--open root)))
+    (unwind-protect
+        (let ((session (with-current-buffer chat emacs-pi--session)))
+          (should (emacs-pi-test--wait
+                   (lambda () (eq (emacs-pi-session-phase session) 'ready))))
+          (with-current-buffer chat
+            (emacs-pi-input-set "/compact Keep key decisions")
+            (emacs-pi-send))
+          (should (emacs-pi-test--wait
+                   (lambda ()
+                     (and (not (emacs-pi-session-compacting session))
+                          (with-current-buffer chat
+                            (string-empty-p (emacs-pi-input-text)))))))
+          (should-not (emacs-pi-session-running session)))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-compact-only-clears-unchanged-command-draft ()
+  (let* ((root (make-temp-file "emacs-pi-compact-draft-" t))
+         (session (make-emacs-pi-session :root root :client-id "compact-draft-123"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session))
+         (callback nil))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "/compact Keep details")
+          (cl-letf (((symbol-function 'emacs-pi-session-compact)
+                     (lambda (_session _instructions completion)
+                       (setq callback completion))))
+            (emacs-pi-compact "Keep details" t)
+            (emacs-pi-input-set "A newer draft")
+            (funcall callback '(:ok t))
+            (should (equal (emacs-pi-input-text) "A newer draft"))
+            (emacs-pi-input-set "/compact Clear after success")
+            (emacs-pi-compact "Clear after success" t)
+            (funcall callback '(:ok t))
+            (should (string-empty-p (emacs-pi-input-text)))
+            (emacs-pi-input-set "Keep M-x draft")
+            (emacs-pi-compact nil)
+            (funcall callback '(:ok t))
+            (should (equal (emacs-pi-input-text) "Keep M-x draft"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-compact-rejects-busy-session-before-rpc ()
+  (let ((session (make-emacs-pi-session :phase 'ready :running t)))
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (&rest _args) (ert-fail "Compact RPC sent while Pi is busy"))))
+      (should-error (emacs-pi-session-compact session nil nil)
+                    :type 'user-error))))
+
+(ert-deftest emacs-pi-compact-with-attachments-preserves-composer ()
+  (let* ((root (make-temp-file "emacs-pi-compact-" t))
+         (session (make-emacs-pi-session :root root :client-id "compact-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "/compact Keep this context concise")
+          (setq emacs-pi--attachments '(fake-image))
+          (should-error (emacs-pi-send) :type 'user-error)
+          (should (equal (emacs-pi-input-text)
+                         "/compact Keep this context concise"))
+          (should (equal emacs-pi--attachments '(fake-image))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
 (ert-deftest emacs-pi-composer-navigation-and-background ()

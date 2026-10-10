@@ -38,6 +38,10 @@ for raw in sys.stdin:
                                   "contextWindow": 10000, "percent": 12}}
     elif kind in ("clear_queue", "abort"):
         data = {"steering": [], "followUp": []} if kind == "clear_queue" else {}
+    elif kind == "compact":
+        send({"type": "compaction_start"})
+        send({"type": "compaction_end"})
+        data = {"summary": "Fake compacted context"}
     elif kind == "prompt":
         send({"id": request_id, "type": "response", "command": kind, "success": True})
         text = command.get("message", "")

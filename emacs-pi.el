@@ -339,21 +339,238 @@
   (kill-buffer (current-buffer)))
 
 (defun emacs-pi-help ()
-  "Show client commands and chat keys."
+  "Show commands supported by this client and chat keys."
   (interactive)
-  (with-help-window "*emacs-pi-help*"
-    (princ "emacs-pi commands\n\n")
-    (princ "/new  /resume  /model  /thinking  /reasoning\n")
-    (princ "/queue  /restart  /reload  /stop  /doctor  /help\n\n")
-    (princ "/reload restarts the RPC process to reload extensions and resources.\n")
-    (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
-    (princ "C-c C-l queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
-    (princ "Queue: RET edit · M-up/down reorder · s/f lane · d delete · C-c C-c apply\n")
-    (princ "i focus input from history · C-a stay after You>\n")
-    (princ "RET/TAB on a Process or tool heading toggles its steps\n")
-    (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n\n")
-    (princ "M-x emacs-pi-attach-image adds a PNG/JPEG to the next prompt.\n")
-    (princ "@path is a path hint; @session includes saved dialogue context.\n")))
+  (let ((commands (emacs-pi-input--slash-choices)))
+    (with-help-window "*emacs-pi-help*"
+      (princ "Slash commands available in emacs-pi (client + current Pi RPC resources):\n")
+      (dolist (choice commands)
+        (princ (format "  %s\n" (car choice))))
+      (princ (format "\nPi CLI commands without a full RPC workflow (not exposed): %s\n"
+                     (string-join emacs-pi-input--unsupported-cli-commands ", ")))
+      (princ "/reload restarts the RPC process to reload extensions and resources.\n")
+      (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
+      (princ "C-c C-l queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
+      (princ "Queue: RET edit · M-up/down reorder · s/f lane · d delete · C-c C-c apply\n")
+      (princ "i focus input from history · C-a stay after You>\n")
+      (princ "RET/TAB on a Process or tool heading toggles its steps\n")
+      (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n\n")
+      (princ "M-x emacs-pi-attach-image adds a PNG/JPEG to the next prompt.\n")
+      (princ "@path is a path hint; @session includes saved dialogue context.\n"))))
+
+(defun emacs-pi-compact (&optional instructions clear-command-draft)
+  "Compact the current Pi context using optional INSTRUCTIONS.
+CLEAR-COMMAND-DRAFT is non-nil when called from the /compact composer command."
+  (interactive
+   (list (let ((text (string-trim
+                      (read-string "Pi compact instructions (empty for default): "))))
+           (unless (string-empty-p text) text)) nil))
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (draft-revision emacs-pi--draft-revision))
+    (when emacs-pi--attachments
+      (user-error "Remove or send attached images before /compact"))
+    (emacs-pi-session-compact
+     session instructions
+     (lambda (result)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (if (plist-get result :ok)
+               (progn
+                 (when (and clear-command-draft
+                            (= draft-revision emacs-pi--draft-revision)
+                            (equal draft (emacs-pi-input-text)))
+                   (emacs-pi-input-set ""))
+                 (message "Pi context compacted"))
+             (message "Pi compact: %s%s"
+                      (plist-get result :message)
+                      (if (plist-get result :uncertain-p)
+                          " (status unknown; inspect the session before retrying)"
+                        "")))))))))
+
+(defun emacs-pi--clear-command-draft (buffer draft revision clear-command-draft)
+  "Clear BUFFER's command draft only if it still matches DRAFT and REVISION."
+  (when (and clear-command-draft (buffer-live-p buffer))
+    (with-current-buffer buffer
+      (when (and (= revision emacs-pi--draft-revision)
+                 (equal draft (emacs-pi-input-text)))
+        (emacs-pi-input-set "")))))
+
+(defun emacs-pi-set-session-name (&optional name clear-command-draft)
+  "Show or set the current Pi session NAME."
+  (interactive
+   (list (let ((text (string-trim
+                      (read-string "Pi session name (empty to show): "))))
+           (unless (string-empty-p text) text)) nil))
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision))
+    (if (not (and (stringp name) (not (string-empty-p name))))
+        (progn
+          (emacs-pi--clear-command-draft buffer draft revision clear-command-draft)
+          (message "Pi session: %s" (or (emacs-pi-session-name session) "(unnamed)")))
+      (emacs-pi-rpc-request
+       (emacs-pi-session-connection session) "set_session_name"
+       (emacs-pi--jobject "name" name)
+       (lambda (result)
+         (if (plist-get result :ok)
+             (progn
+               (setf (emacs-pi-session-name session) name)
+               (emacs-pi-ui-schedule session nil)
+               (emacs-pi--clear-command-draft buffer draft revision clear-command-draft)
+               (message "Pi session renamed: %s" name))
+           (message "Pi session name: %s" (plist-get result :message))))
+       120))))
+
+(defun emacs-pi-show-session-stats (&optional _ignored clear-command-draft)
+  "Show current Pi session statistics."
+  (interactive)
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "get_session_stats" nil
+     (lambda (result)
+       (if (not (plist-get result :ok))
+           (message "Pi session stats: %s" (plist-get result :message))
+         (let* ((data (plist-get result :data))
+                (usage (emacs-pi--jget data "contextUsage"))
+                (tokens (emacs-pi--jget data "tokens")))
+           (with-help-window "*emacs-pi-session*"
+             (princ (format "Session: %s\\nSession file: %s\\n"
+                            (or (emacs-pi-session-name session) "(unnamed)")
+                            (or (emacs-pi--jget data "sessionFile")
+                                (emacs-pi-session-session-file session)
+                                "unknown")))
+             (princ (format "Messages: %s user, %s assistant\\nTool calls: %s\\n"
+                            (or (emacs-pi--jget data "userMessages") 0)
+                            (or (emacs-pi--jget data "assistantMessages") 0)
+                            (or (emacs-pi--jget data "toolCalls") 0)))
+             (princ (format "Tokens: %s\\nCost: %s\\nContext: %s / %s (%s%%)\\n"
+                            (or (emacs-pi--jget tokens "total") "unknown")
+                            (or (emacs-pi--jget data "cost") "unknown")
+                            (or (emacs-pi--jget usage "tokens") "unknown")
+                            (or (emacs-pi--jget usage "contextWindow") "unknown")
+                            (or (emacs-pi--jget usage "percent") "unknown"))))
+           (emacs-pi--clear-command-draft buffer draft revision clear-command-draft))))
+     120)))
+
+(defun emacs-pi-copy-last-response (&optional _ignored clear-command-draft)
+  "Copy the last assistant response to the kill ring."
+  (interactive)
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "get_last_assistant_text" nil
+     (lambda (result)
+       (let ((text (and (plist-get result :ok)
+                        (emacs-pi--jget (plist-get result :data) "text"))))
+         (if (stringp text)
+             (progn
+               (kill-new text)
+               (emacs-pi--clear-command-draft buffer draft revision clear-command-draft)
+               (message "Copied last Pi response"))
+           (message "Pi copy: %s" (or (plist-get result :message)
+                                      "No assistant text to copy")))))
+     120)))
+
+(defun emacs-pi-export-session (&optional output-path clear-command-draft)
+  "Export the current Pi session to HTML, optionally at OUTPUT-PATH."
+  (interactive
+   (list (let ((path (string-trim
+                      (read-string "HTML output path (empty for automatic): "))))
+           (unless (string-empty-p path) path)) nil))
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision)
+         (path (and output-path
+                    (expand-file-name output-path (emacs-pi-session-root session))))
+         (args (and path (emacs-pi--jobject "outputPath" path))))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "export_html" args
+     (lambda (result)
+       (if (plist-get result :ok)
+           (let ((exported (emacs-pi--jget (plist-get result :data) "path")))
+             (emacs-pi--clear-command-draft buffer draft revision clear-command-draft)
+             (message "Pi session exported: %s" exported))
+         (message "Pi export: %s" (plist-get result :message))))
+     120)))
+
+(defun emacs-pi-clone-session (&optional _ignored clear-command-draft)
+  "Clone the current active session branch."
+  (interactive)
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision))
+    (emacs-pi-session-clone
+     session
+     (lambda (result)
+       (if (not (plist-get result :ok))
+           (message "Pi clone: %s" (plist-get result :message))
+         (if (emacs-pi--jtrue-p
+              (emacs-pi--jget (plist-get result :data) "cancelled"))
+             (message "Pi clone cancelled")
+           (emacs-pi--clear-command-draft buffer draft revision clear-command-draft)
+           (message "Pi session cloned")))))))
+
+(defun emacs-pi-fork-session (&optional _ignored clear-command-draft)
+  "Fork the current session from a selected user message."
+  (interactive)
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (draft (emacs-pi-input-text))
+         (revision emacs-pi--draft-revision))
+    (when (emacs-pi-session-running session)
+      (user-error "Stop the current Pi run before forking"))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "get_fork_messages" nil
+     (lambda (result)
+       (if (not (plist-get result :ok))
+           (message "Pi fork: %s" (plist-get result :message))
+         (run-at-time
+          0 nil
+          (lambda ()
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (let* ((messages (emacs-pi--array-list
+                                  (emacs-pi--jget (plist-get result :data) "messages")))
+                       (choices
+                        (cl-loop for item in messages
+                                 for index from 1
+                                 for id = (emacs-pi--jget item "entryId")
+                                 for text = (emacs-pi--jget item "text")
+                                 when (and id (stringp text))
+                                 collect (cons (format "%d. %s" index
+                                                      (truncate-string-to-width
+                                                       text 72 nil nil "…"))
+                                               id)))
+                       (choice (and choices
+                                    (assoc (completing-read "Fork from: "
+                                                            choices nil t)
+                                           choices))))
+                  (if (not choice)
+                      (message "No user messages available to fork")
+                    (emacs-pi-session-fork
+                     session (cdr choice)
+                     (lambda (fork-result)
+                       (if (not (plist-get fork-result :ok))
+                           (message "Pi fork: %s"
+                                    (plist-get fork-result :message))
+                         (if (emacs-pi--jtrue-p
+                              (emacs-pi--jget (plist-get fork-result :data)
+                                             "cancelled"))
+                             (message "Pi fork cancelled")
+                           (emacs-pi--clear-command-draft
+                            buffer draft revision clear-command-draft)
+                           (message "Pi forked from selected message"))))))))))))
+     120))))
 
 (defun emacs-pi-select-model ()
   "Select an available provider/model for this Pi chat."

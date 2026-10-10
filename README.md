@@ -50,6 +50,8 @@ If Emacs cannot find `pi` on `PATH`, set `emacs-pi-executable` to its absolute p
 
 Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session or start a new one. Type in the `You>` input area and press `RET` to send. Enter `/` or `@` and press `TAB` to complete commands and paths. Choose a directory with `RET` to insert it, then press `TAB` again to complete inside it. Use `@session` followed by `TAB` to pick a saved conversation; choosing one inserts its saved-dialogue reference.
 
+`/compact [instructions]` compacts the current context through Pi RPC. The slash picker, completion, dispatch, and `/help` share the same client command registry and current RPC-discovered extensions/templates/skills. Pi CLI commands whose full interactive workflows are not available over RPC are intentionally not exposed in Emacs.
+
 ## Keyboard shortcuts
 
 | Action | Shortcut |

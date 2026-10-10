@@ -81,6 +81,37 @@
                (emacs-pi--jget (plist-get result :data) "contextUsage"))
          (emacs-pi-session--changed session 'status))))))
 
+(defun emacs-pi-session-refresh-state (session &optional callback)
+  "Refresh SESSION metadata from Pi and call CALLBACK with the RPC result."
+  (let ((generation (emacs-pi-session-generation session)))
+    (emacs-pi-rpc-request
+     (emacs-pi-session-connection session) "get_state" nil
+     (lambda (result)
+       (when (and (= generation (emacs-pi-session-generation session))
+                  (plist-get result :ok))
+         (let* ((state (plist-get result :data))
+                (session-file (emacs-pi--jget state "sessionFile")))
+           (setf (emacs-pi-session-session-id session)
+                 (emacs-pi--jget state "sessionId")
+                 (emacs-pi-session-session-file session)
+                 (if (eq session-file :null)
+                     (emacs-pi-session-session-file session)
+                   (or session-file (emacs-pi-session-session-file session)))
+                 (emacs-pi-session-name session)
+                 (emacs-pi--jget state "sessionName")
+                 (emacs-pi-session-model session)
+                 (emacs-pi--jget state "model")
+                 (emacs-pi-session-thinking session)
+                 (emacs-pi--jget state "thinkingLevel")
+                 (emacs-pi-session-running session)
+                 (emacs-pi--jtrue-p (emacs-pi--jget state "isStreaming"))
+                 (emacs-pi-session-compacting session)
+                 (emacs-pi--jtrue-p (emacs-pi--jget state "isCompacting")))
+           (emacs-pi-session--refresh-history session)
+           (emacs-pi-session-refresh-stats session)
+           (emacs-pi-session--changed session 'status)))
+       (when callback (funcall callback result))))))
+
 (defun emacs-pi-session--start (session)
   "Start or restart the Pi process for SESSION."
   (let* ((generation (emacs-pi-session-generation session))
@@ -242,6 +273,69 @@
          (funcall (emacs-pi-session-on-extension session) session event)))
       (_ nil))))
 
+(defun emacs-pi-session-compact (session instructions callback)
+  "Compact SESSION, optionally using INSTRUCTIONS, then call CALLBACK."
+  (unless (eq (emacs-pi-session-phase session) 'ready)
+    (user-error "Pi chat is not ready"))
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
+  (when (or (emacs-pi-session-running session)
+            (emacs-pi-session-compacting session))
+    (user-error "Stop the current Pi run before compacting context"))
+  (setf (emacs-pi-session-compacting session) t)
+  (emacs-pi-session--changed session 'status)
+  (emacs-pi-rpc-request
+   (emacs-pi-session-connection session) "compact"
+   (when (and (stringp instructions) (not (string-empty-p instructions)))
+     (emacs-pi--jobject "customInstructions" instructions))
+   (lambda (result)
+     (setf (emacs-pi-session-compacting session) nil)
+     (emacs-pi-session--changed session 'status)
+     (when (plist-get result :ok)
+       (emacs-pi-session--refresh-history session)
+       (emacs-pi-session-refresh-stats session))
+     (when callback (funcall callback result)))
+   120))
+
+(defun emacs-pi-session-fork (session entry-id callback)
+  "Fork SESSION from user message ENTRY-ID and call CALLBACK with its result."
+  (unless (eq (emacs-pi-session-phase session) 'ready)
+    (user-error "Pi chat is not ready"))
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
+  (when (or (emacs-pi-session-running session)
+            (emacs-pi-session-compacting session))
+    (user-error "Stop the current Pi run before forking"))
+  (emacs-pi-rpc-request
+   (emacs-pi-session-connection session) "fork"
+   (emacs-pi--jobject "entryId" entry-id)
+   (lambda (result)
+     (when (and (plist-get result :ok)
+                (not (emacs-pi--jtrue-p
+                      (emacs-pi--jget (plist-get result :data) "cancelled"))))
+       (emacs-pi-session-refresh-state session))
+     (when callback (funcall callback result)))
+   120))
+
+(defun emacs-pi-session-clone (session callback)
+  "Clone SESSION's active branch and call CALLBACK with its result."
+  (unless (eq (emacs-pi-session-phase session) 'ready)
+    (user-error "Pi chat is not ready"))
+  (when (emacs-pi-session-queue-rewriting session)
+    (user-error "Pi queue is being rewritten; wait for it to finish"))
+  (when (or (emacs-pi-session-running session)
+            (emacs-pi-session-compacting session))
+    (user-error "Stop the current Pi run before cloning"))
+  (emacs-pi-rpc-request
+   (emacs-pi-session-connection session) "clone" nil
+   (lambda (result)
+     (when (and (plist-get result :ok)
+                (not (emacs-pi--jtrue-p
+                      (emacs-pi--jget (plist-get result :data) "cancelled"))))
+       (emacs-pi-session-refresh-state session))
+     (when callback (funcall callback result)))
+   120))
+
 (defun emacs-pi-session-submit (session text &optional images behavior
                                       callback display-text)
   "Send TEXT and IMAGES to SESSION with BEHAVIOR; call CALLBACK.
@@ -250,6 +344,8 @@ DISPLAY-TEXT is the compact prompt shown in the header."
     (user-error "Pi chat is not ready"))
   (when (emacs-pi-session-queue-rewriting session)
     (user-error "Pi queue is being rewritten; wait for it to finish"))
+  (when (emacs-pi-session-compacting session)
+    (user-error "Pi context is being compacted; wait for it to finish"))
   (let* ((args (emacs-pi--jobject "message" text))
          (queued (and (not (string-prefix-p "/" text))
                       (or behavior (emacs-pi-session-running session))))
