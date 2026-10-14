@@ -70,8 +70,10 @@
 (defun emacs-pi--local-root (root)
   "Return canonical local ROOT with a trailing separator."
   (when (file-remote-p root) (user-error "emacs-pi does not support remote directories"))
-  (unless (file-directory-p root) (user-error "Not a directory: %s" root))
-  (file-name-as-directory (file-truename (expand-file-name root))))
+  (setq root (expand-file-name root))
+  (unless (file-directory-p root)
+    (make-directory root t))
+  (file-name-as-directory (file-truename root)))
 
 (provide 'emacs-pi-core)
 ;;; emacs-pi-core.el ends here

@@ -157,7 +157,7 @@
   (let* ((start (if buffer-file-name
                     (file-name-directory buffer-file-name) default-directory))
          (directory (or root (read-directory-name "Pi project root: " start
-                                                   nil t))))
+                                                   nil nil))))
     (setq directory (emacs-pi--local-root directory))
     (let ((records (emacs-pi-history-list directory)))
       (if records
