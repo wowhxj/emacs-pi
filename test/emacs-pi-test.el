@@ -449,6 +449,7 @@
     (unwind-protect
         (with-current-buffer buffer
           (emacs-pi-input-set "hello  ")
+          (should (= (point) (emacs-pi-input-end)))
           (let ((begin (emacs-pi-input-beginning)))
             (goto-char (point-min))
             (emacs-pi-ui-focus-or-insert)
@@ -464,9 +465,15 @@
             (should (equal (emacs-pi-input-text) "ihello  "))
             (should (eq (overlay-get emacs-pi--input-background 'face)
                         'emacs-pi-input-face))
+            (should-not (face-attribute 'emacs-pi-input-face :underline nil t))
+            (should (face-attribute 'emacs-pi-input-face :extend nil t))
+            (should (= (overlay-start emacs-pi--input-background)
+                       (1+ (marker-position emacs-pi--input-marker))))
             (should (<= (overlay-start emacs-pi--input-background) begin))
             (should (= (overlay-end emacs-pi--input-background)
-                       (point-max)))))
+                       (point-max)))
+            (should (= (char-before (point-max)) ?\n))
+            (should (get-text-property (1- (point-max)) 'read-only))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
@@ -751,6 +758,27 @@
                   body (overlay-get header 'emacs-pi-process))
             (should-not (overlay-get body 'invisible))
             (should (equal (emacs-pi-input-text) "unsent draft"))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
+(ert-deftest emacs-pi-in-progress-assistant-text-waits-for-settle ()
+  (let* ((root (make-temp-file "emacs-pi-intermediate-" t))
+         (intermediate "已提交并推送 c2ad998")
+         (session (make-emacs-pi-session
+                   :root root :client-id "intermediate-123456" :phase 'ready
+                   :running t :messages
+                   (list (emacs-pi--jobject "role" "user" "content" "Update")
+                         (emacs-pi--jobject "role" "assistant" "content"
+                                            (vector (emacs-pi--jobject
+                                                     "type" "text" "text" intermediate))))))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (should-not (string-match-p (regexp-quote intermediate) (buffer-string)))
+          (setf (emacs-pi-session-running session) nil)
+          (emacs-pi-ui-render session)
+          (should (string-match-p (regexp-quote intermediate) (buffer-string))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 

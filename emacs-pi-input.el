@@ -71,15 +71,20 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
   (+ (marker-position emacs-pi--input-marker)
      (length emacs-pi--composer-prefix)))
 
+(defun emacs-pi-input-end ()
+  "Return the end of the Pi draft, before its read-only line ending."
+  (max (emacs-pi-input-beginning) (1- (point-max))))
+
 (defun emacs-pi-input-text ()
   "Return the current Pi draft without text properties."
-  (buffer-substring-no-properties (emacs-pi-input-beginning) (point-max)))
+  (buffer-substring-no-properties (emacs-pi-input-beginning)
+                                  (emacs-pi-input-end)))
 
 (defun emacs-pi-input-set (text)
   "Replace the current Pi draft with TEXT."
   (let ((begin (emacs-pi-input-beginning)))
-    (delete-region begin (point-max))
-    (goto-char (point-max))
+    (delete-region begin (emacs-pi-input-end))
+    (goto-char (emacs-pi-input-end))
     (insert text)))
 
 (defun emacs-pi-focus-input ()
@@ -495,10 +500,9 @@ the directory whose contents should be offered."
     (let ((end (point)))
       (save-excursion
         (cond
-         ((and (save-excursion
-                 (goto-char (emacs-pi-input-beginning))
-                 (looking-at-p "/[^[:space:]]*\\'"))
-               (<= end (point-max)))
+         ((and (string-match-p "\\`/[^[:space:]]*\\'"
+                               (emacs-pi-input-text))
+               (<= end (emacs-pi-input-end)))
           (list (emacs-pi-input-beginning) end
                 (mapcar #'cdr (emacs-pi-input--slash-choices))
                 :exclusive 'no))
@@ -622,7 +626,7 @@ the directory whose contents should be offered."
                (not (y-or-n-p "Append recovered text to current draft? ")))
       (push item emacs-pi--recovery)
       (user-error "Recovery cancelled"))
-    (goto-char (point-max))
+    (goto-char (emacs-pi-input-end))
     (unless (string-empty-p (emacs-pi-input-text)) (insert "\n"))
     (insert text)
     (setq emacs-pi--attachments

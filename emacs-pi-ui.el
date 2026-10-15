@@ -15,6 +15,7 @@
 (declare-function emacs-pi-steer "emacs-pi-input")
 (declare-function emacs-pi-focus-input "emacs-pi-input")
 (declare-function emacs-pi-input-beginning "emacs-pi-input")
+(declare-function emacs-pi-input-end "emacs-pi-input")
 (declare-function emacs-pi-previous-prompt "emacs-pi-input")
 (declare-function emacs-pi-next-prompt "emacs-pi-input")
 (declare-function emacs-pi-stop "emacs-pi")
@@ -39,8 +40,10 @@
   "Face for Pi labels." :group 'emacs-pi)
 (defface emacs-pi-tool-face '((t :inherit shadow))
   "Face for tool summaries." :group 'emacs-pi)
-(defface emacs-pi-input-face '((t :inherit widget-field :extend t))
+(defface emacs-pi-input-face
+  '((t :inherit widget-field :underline nil :extend t))
   "Background of the Pi composer." :group 'emacs-pi)
+
 (defface emacs-pi-status-face '((t :inherit mode-line))
   "Face for Pi activity in the mode line." :group 'emacs-pi)
 
@@ -83,6 +86,10 @@
 (defvar-local emacs-pi--spinner-timer nil)
 (defvar-local emacs-pi--spinner-index 0)
 (defvar-local emacs-pi--input-background nil)
+
+(defun emacs-pi-ui--set-input-background ()
+  "Apply the composer face to its full line."
+  (overlay-put emacs-pi--input-background 'face 'emacs-pi-input-face))
 (defvar-local emacs-pi--user-overlays nil)
 (defvar-local emacs-pi--process-overlays nil)
 (defvar-local emacs-pi--image-cache nil)
@@ -532,8 +539,12 @@ ACTIVE-P means this is the turn currently being processed by Pi."
                         (equal (emacs-pi--jget message "role") "assistant"))
                       responses))
          (candidate (car (last assistants)))
-         (final (and candidate (emacs-pi-ui--final-p candidate) candidate))
-         (steps (if final (delq final (copy-sequence assistants)) assistants))
+         (candidate-final-p (and candidate (emacs-pi-ui--final-p candidate)))
+         (final (and (not active-p) candidate-final-p candidate))
+         (steps (cond
+                 (active-p (cl-remove-if #'emacs-pi-ui--final-p assistants))
+                 (final (delq final (copy-sequence assistants)))
+                 (t assistants)))
          (thinking (and final emacs-pi-show-thinking
                         (emacs-pi-ui--thinking-blocks final)))
          (count (+ (apply #'+ (mapcar #'emacs-pi-ui--step-count steps))
@@ -604,7 +615,7 @@ ACTIVE-P means this is the turn currently being processed by Pi."
       (with-current-buffer buffer
         (emacs-pi-ui--sync-fold-state session)
         (let* ((inhibit-read-only t)
-               (at-end (>= (point) (max (point-min) (- (point-max) 2))))
+               (at-end (>= (point) (max (point-min) (- (emacs-pi-input-end) 1))))
                (start (marker-position emacs-pi--input-marker))
                (buffer-undo-list t))
           (mapc #'delete-overlay emacs-pi--user-overlays)
@@ -630,9 +641,8 @@ ACTIVE-P means this is the turn currently being processed by Pi."
             (move-overlay emacs-pi--input-background
                           (1+ (marker-position emacs-pi--input-marker))
                           (point-max))
-            (overlay-put emacs-pi--input-background 'face
-                         'emacs-pi-input-face))
-          (when at-end (goto-char (point-max)))
+            (emacs-pi-ui--set-input-background))
+          (when at-end (goto-char (emacs-pi-input-end)))
           (force-mode-line-update t))))))
 
 (defun emacs-pi-ui-schedule (session _change)
@@ -666,14 +676,18 @@ ACTIVE-P means this is the turn currently being processed by Pi."
         (add-text-properties 0 1 '(front-sticky (read-only)) prefix)
         (add-text-properties (1- (length prefix)) (length prefix)
                              '(rear-nonsticky (read-only)) prefix)
-        (insert prefix))
+        (insert prefix)
+        (let ((end (point)))
+          (insert (propertize "\n" 'read-only t
+                              'rear-nonsticky '(read-only)))
+          (goto-char end)))
       (setq-local emacs-pi--input-marker
                   (copy-marker (point-min) t))
       (setq-local emacs-pi--input-background
                   (make-overlay (1+ (marker-position emacs-pi--input-marker))
                                 (point-max) nil t t))
-      (overlay-put emacs-pi--input-background 'face 'emacs-pi-input-face)
-      (goto-char (point-max))
+      (emacs-pi-ui--set-input-background)
+      (goto-char (emacs-pi-input-end))
       (setq buffer-undo-list nil))
     (setf (emacs-pi-session-buffer session) buffer)
     buffer))
