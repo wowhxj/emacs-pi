@@ -32,6 +32,22 @@
         (should (string-match-p "\\\"context\\\":\\\"请检查当前会话\\\""
                                 (buffer-string)))))))
 
+(ert-deftest emacs-pi-provider-error-is-visible-in-transcript ()
+  (let* ((detail "Post \"https://chatgpt.com/backend-api/codex/responses\": utls: TLS handshake: EOF")
+         (session (make-emacs-pi-session :messages nil :tools (make-hash-table :test #'equal)))
+         (message (emacs-pi--jobject "role" "assistant" "content" []
+                                     "stopReason" "error" "errorMessage" detail)))
+    (emacs-pi-session-handle-event
+     session (emacs-pi--jobject "type" "message_end" "message" message))
+    (should (equal (emacs-pi-session-error session) detail))
+    (setf (emacs-pi-session-messages session) nil)
+    (with-temp-buffer
+      (let ((emacs-pi--detail-index 0)
+            (emacs-pi-show-thinking nil))
+        (emacs-pi-ui--transcript session))
+      (should (string-match-p (regexp-quote detail) (buffer-string)))
+      (should (string-match-p "\\[Pi:" (buffer-string))))))
+
 (ert-deftest emacs-pi-malformed-rpc-record-closes-safely ()
   (let* ((receive (generate-new-buffer " *emacs-pi-test-receive*"))
          (connection (make-emacs-pi-rpc

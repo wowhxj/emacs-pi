@@ -200,7 +200,9 @@
   "Apply Pi EVENT to SESSION and inform its observer."
   (let ((type (emacs-pi--jget event "type")))
     (pcase type
-      ("agent_start" (setf (emacs-pi-session-running session) t)
+      ("agent_start"
+       (setf (emacs-pi-session-running session) t
+             (emacs-pi-session-error session) nil)
        (emacs-pi-session--changed session 'status))
       ("agent_settled"
        (setf (emacs-pi-session-running session) nil
@@ -227,7 +229,11 @@
            (setf (emacs-pi-session-messages session)
                  (append (emacs-pi-session-messages session) (list message)))
            (when (equal (emacs-pi--jget message "role") "assistant")
-             (setf (emacs-pi-session-active-message session) nil))
+             (setf (emacs-pi-session-active-message session) nil)
+             (when (and (equal (emacs-pi--jget message "stopReason") "error")
+                        (stringp (emacs-pi--jget message "errorMessage")))
+               (setf (emacs-pi-session-error session)
+                     (emacs-pi--jget message "errorMessage"))))
            (emacs-pi-session--changed session 'message))))
       ("tool_execution_start"
        (let ((id (emacs-pi--jget event "toolCallId")))
