@@ -16,6 +16,15 @@
 
 ;;; Generated autoloads from emacs-pi-history.el
 
+(autoload 'emacs-pi-list-sessions "emacs-pi-history"
+"Read sessions cooperatively without starting Pi; return a cancel function.
+ON-SUCCESS receives a plist with :items and :diagnostics.  Each item has
+:source (canonical storage directory), :path, :id, :cwd, :preview,
+:modified and :time-source.  Unknown flags use the symbol `unknown'.
+ON-ERROR receives a diagnostic string on fatal failure.  Cancellation
+silently suppresses callbacks.  Partial failures appear in :diagnostics.
+
+(fn ON-SUCCESS &key DIRECTORIES ON-ERROR)")
 (register-definition-prefixes "emacs-pi-history" '("emacs-pi-"))
 
 
@@ -31,6 +40,15 @@
 
 ;;; Generated autoloads from emacs-pi.el
 
+(autoload 'emacs-pi-open-session "emacs-pi"
+"Restore SESSION-FILE without a picker or window deletion.
+DIRECTORY overrides the recorded working directory.  SESSION-DIRECTORY
+is a per-call storage override.  DISPLAY is `current', `none', or a
+`display-buffer' action.  Return the chat buffer immediately; ON-READY
+receives it only after RPC verifies the exact file and ID.  ON-ERROR
+receives a diagnostic string.  A terminal callback runs at most once.
+
+(fn SESSION-FILE &key DIRECTORY SESSION-DIRECTORY (DISPLAY \\='current) ON-READY ON-ERROR)")
 (autoload 'emacs-pi-chat "emacs-pi"
 "Choose a saved Pi session in ROOT, or start a new one.
 
@@ -57,6 +75,7 @@
 ;;; Generated autoloads from emacs-pi-queue.el
 
 (register-definition-prefixes "emacs-pi-queue" '("emacs-pi-"))
+
 
 ;;; End of scraped data
 

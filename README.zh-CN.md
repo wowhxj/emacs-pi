@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+开发中：[会话枚举与指定恢复接口](docs/PUBLIC-API.md)，含回调契约及当前未验证限制。
+
 [emacs-pi](https://github.com/wowhxj/emacs-pi) 是 [Pi Coding Agent](https://github.com/badlogic/pi-mono) 的 Emacs 原生聊天界面。每个聊天使用独立的 Pi RPC 进程，因此可以同时打开多个项目会话。
 
 ## 功能

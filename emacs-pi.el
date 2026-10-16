@@ -53,10 +53,16 @@
         (when (eq emacs-pi--queue-session session)
           (emacs-pi--queue-render session))))))
 
-(defun emacs-pi--show-chat (buffer)
-  "Show Pi chat BUFFER in the selected frame's sole window."
-  (switch-to-buffer buffer)
-  (delete-other-windows)
+(defun emacs-pi--show-chat (buffer &optional display)
+  "Show Pi chat BUFFER according to DISPLAY.
+Nil preserves the existing sole-window behavior.  `current' keeps the
+window layout, `none' does not display BUFFER, and other values are
+passed to `display-buffer' as an action."
+  (pcase display
+    ('none nil)
+    ('current (switch-to-buffer buffer))
+    ('nil (switch-to-buffer buffer) (delete-other-windows))
+    (_ (display-buffer buffer display)))
   buffer)
 
 (defun emacs-pi--check-arguments ()
@@ -128,7 +134,7 @@
              (emacs-pi-input-set (or (emacs-pi--jget request "text") "")))))
         (_ nil)))))
 
-(defun emacs-pi--open (root &optional session-file)
+(defun emacs-pi--open (root &optional session-file display)
   "Open a new chat at ROOT, optionally restoring SESSION-FILE."
   (emacs-pi--check-arguments)
   (unless (or (file-executable-p emacs-pi-executable)
@@ -146,9 +152,112 @@
                                    #'emacs-pi--extension))
          (buffer (emacs-pi-ui-create session)))
     (puthash (emacs-pi-session-client-id session) buffer emacs-pi--chats)
-    (emacs-pi--show-chat buffer)
+    (emacs-pi--show-chat buffer display)
     (emacs-pi-ui-render session)
     buffer))
+
+;;;###autoload
+(cl-defun emacs-pi-open-session
+    (session-file &key directory session-directory (display 'current)
+                  on-ready on-error)
+  "Restore SESSION-FILE without a picker or window deletion.
+DIRECTORY overrides the recorded working directory.  SESSION-DIRECTORY
+is a per-call storage override.  DISPLAY is `current', `none', or a
+`display-buffer' action.  Return the chat buffer immediately; ON-READY
+receives it only after RPC verifies the exact file and ID.  ON-ERROR
+receives a diagnostic string.  A terminal callback runs at most once."
+  (unless (and (stringp session-file) (not (file-remote-p session-file))
+               (file-regular-p session-file))
+    (user-error "An existing local Pi session file is required"))
+  (let* ((path (file-truename session-file))
+         (header (with-temp-buffer
+                   (insert-file-contents path nil 0 65536)
+                   (goto-char (point-min))
+                   (emacs-pi--jparse
+                    (buffer-substring-no-properties
+                     (point-min) (line-end-position)))))
+         (id (emacs-pi--jget header "id"))
+         (root (or directory (emacs-pi--jget header "cwd")))
+         existing)
+    (unless (and (equal (emacs-pi--jget header "type") "session")
+                 (stringp id) (stringp root) (not (file-remote-p root))
+                 (file-directory-p root))
+      (user-error "Invalid Pi session header or project directory"))
+    (setq root (emacs-pi--local-root root))
+    (maphash
+     (lambda (_key buffer)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (let ((file (and emacs-pi--session
+                            (emacs-pi-session-session-file emacs-pi--session))))
+             (when (and (stringp file) (file-exists-p file)
+                        (file-equal-p file path))
+               (setq existing buffer))))))
+     emacs-pi--chats)
+    (when existing
+      (with-current-buffer existing
+        (unless (equal root (emacs-pi-session-root emacs-pi--session))
+          (user-error "Pi session is already open in another directory"))))
+    (let* ((emacs-pi-session-directory
+            (or session-directory emacs-pi-session-directory))
+           (buffer (or existing (emacs-pi--open root path 'none)))
+           (session (buffer-local-value 'emacs-pi--session buffer))
+           (generation nil)
+           (deadline (+ (float-time) 35))
+           (done nil)
+           timer)
+      (when existing
+        (let* ((connection (emacs-pi-session-connection session))
+               (process (and connection (emacs-pi-rpc-process connection))))
+          (when (and (eq (emacs-pi-session-phase session) 'dead)
+                     (not (and process (process-live-p process))))
+            (emacs-pi-session-restart session)
+            (setf (emacs-pi-session-error session) nil))))
+      (setq generation (emacs-pi-session-generation session))
+      (emacs-pi--show-chat buffer display)
+      (cl-labels
+          ((finish (failure)
+             (unless done
+               (setq done t)
+               (when timer (cancel-timer timer))
+               (if failure
+                   (if on-error (funcall on-error failure)
+                     (message "emacs-pi: %s" failure))
+                 (when on-ready (funcall on-ready buffer)))))
+           (check ()
+             (cond
+              ((/= generation (emacs-pi-session-generation session))
+               (finish "Pi connection changed during restore"))
+              ((not (buffer-live-p buffer)) (finish "Pi chat buffer was killed"))
+              ((> (float-time) deadline) (finish "Pi session restore timed out"))
+              ((eq (emacs-pi-session-phase session) 'dead)
+               (finish (or (emacs-pi-session-error session) "Pi process exited")))
+              ((eq (emacs-pi-session-phase session) 'ready)
+               (let ((connection (emacs-pi-session-connection session)))
+                 (if (not (and connection
+                               (process-live-p (emacs-pi-rpc-process connection))))
+                     (finish "Pi connection is not live")
+                   (cancel-timer timer)
+                   (setq timer (run-at-time 30 nil #'finish "Pi state check timed out"))
+                   (emacs-pi-rpc-request
+                    connection "get_state" nil
+                    (lambda (result)
+                      (let* ((state (plist-get result :data))
+                             (file (emacs-pi--jget state "sessionFile")))
+                        (finish
+                         (unless (and (eq (emacs-pi-session-phase session) 'ready)
+                                      (eq (emacs-pi-rpc-status connection) 'ready)
+                                      (process-live-p (emacs-pi-rpc-process connection))
+                                      (= generation (emacs-pi-session-generation session))
+                                      (eq connection (emacs-pi-session-connection session))
+                                      (buffer-live-p buffer)
+                                      (plist-get result :ok)
+                                      (equal id (emacs-pi--jget state "sessionId"))
+                                      (stringp file) (file-exists-p file)
+                                      (file-equal-p path file))
+                           "Pi restored a different or unverifiable session")))))))))))
+        (setq timer (run-at-time 0.01 0.05 #'check)))
+      buffer)))
 
 ;;;###autoload
 (defun emacs-pi-chat (&optional root)

@@ -14,6 +14,12 @@ messages = []
 entries = []
 leaf = None
 counter = 0
+session_file = None
+session_id = "fake-session"
+if "--session" in sys.argv:
+    session_file = sys.argv[sys.argv.index("--session") + 1]
+    with open(session_file, encoding="utf-8") as history:
+        session_id = json.loads(history.readline())["id"]
 
 for raw in sys.stdin:
     command = json.loads(raw)
@@ -21,7 +27,8 @@ for raw in sys.stdin:
     request_id = command.get("id")
     if kind == "get_state":
         data = {
-            "sessionId": "fake-session",
+            "sessionId": session_id,
+            "sessionFile": session_file,
             "thinkingLevel": "off",
             "isStreaming": False,
             "model": {"provider": "fake", "id": "test"},

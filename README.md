@@ -2,6 +2,9 @@
 
 [简体中文](README.zh-CN.md)
 
+Development integration APIs: [enumerate and restore sessions](docs/PUBLIC-API.md)
+(including current limitations and callback contracts).
+
 A native Emacs chat interface for [Pi Coding Agent](https://github.com/badlogic/pi-mono). Each chat runs in its own Pi RPC process, so you can keep multiple project conversations open at once.
 
 ## Features

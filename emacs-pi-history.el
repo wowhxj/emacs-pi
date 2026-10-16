@@ -51,47 +51,75 @@ When nil, use Pi's environment or default agent directory."
         (list :ok nil :kind error-kind :id cursor)
       (list :ok t :entries branch))))
 
-(defun emacs-pi-history--record (path &optional attributes)
-  "Read a bounded session preview from PATH, returning a plist or nil."
+(defun emacs-pi-history--consume (record line)
+  "Accumulate one JSON LINE into mutable plist RECORD."
   (condition-case nil
-      (with-temp-buffer
-        (let* ((attributes (or attributes (file-attributes path)))
-               (size (file-attribute-size attributes))
-               (limit (min size (* 4 1024 1024)))
-               (full-read-p (= limit size)))
-          (insert-file-contents path nil 0 limit)
-        (goto-char (point-min))
-        (let (id cwd created preview last-preview name (message-count 0))
+      (let* ((entry (emacs-pi--jparse line))
+             (message (emacs-pi--jget entry "message"))
+             (role (emacs-pi--jget message "role")))
+        (pcase (emacs-pi--jget entry "type")
+          ("session"
+           (setf (plist-get record :id) (emacs-pi--jget entry "id")
+                 (plist-get record :cwd) (emacs-pi--jget entry "cwd")
+                 (plist-get record :created) (emacs-pi--jget entry "timestamp")))
+          ("session_info"
+           (setf (plist-get record :name) (emacs-pi--jget entry "name")))
+          ("message"
+           (cl-incf (plist-get record :message-count))
+           (when (equal role "user")
+             (let ((text (emacs-pi--message-text message)))
+               (unless (plist-get record :has-user)
+                 (setf (plist-get record :preview)
+                       (if (string-empty-p text) "[Non-text user message]" text)))
+               (setf (plist-get record :has-user) t)
+               (unless (string-empty-p text)
+                 (setf (plist-get record :last-preview) text))))
+           (when (member role '("user" "assistant"))
+             (let* ((stamp (emacs-pi--jget message "timestamp"))
+                    (seconds (if (numberp stamp) (/ stamp 1000.0)
+                               (let ((entry-time (emacs-pi--jget entry "timestamp")))
+                                 (unless (stringp entry-time)
+                                   (error "Missing message timestamp"))
+                                 (float-time (date-to-time entry-time))))))
+               (setf (plist-get record :activity)
+                     (max seconds (or (plist-get record :activity) seconds))))))))
+    (error (cl-incf (plist-get record :invalid-lines))))
+  record)
+
+(defun emacs-pi-history--empty-record (path)
+  "Make an accumulator for PATH."
+  (list :path path :id nil :cwd nil :created nil :preview nil
+        :last-preview nil :name nil :message-count 0 :has-user nil
+        :activity nil :invalid-lines 0))
+
+(defun emacs-pi-history--finish-record (record)
+  "Finish accumulated RECORD without guessing unknown states."
+  (let ((activity (plist-get record :activity)))
+    (setf (plist-get record :modified) (and activity (seconds-to-time activity))
+          (plist-get record :time-source) (and activity 'message)
+          (plist-get record :empty)
+          (if (plist-get record :has-user) nil
+            (if (> (plist-get record :invalid-lines) 0) 'unknown t))
+          (plist-get record :internal) 'unknown
+          (plist-get record :archived) 'unknown))
+  record)
+
+(defun emacs-pi-history--record (path &optional _attributes)
+  "Read a complete session preview from PATH, including diagnostics."
+  (let ((record (emacs-pi-history--empty-record path)))
+    (condition-case nil
+        (with-temp-buffer
+          (insert-file-contents path)
+          (goto-char (point-min))
           (while (not (eobp))
-            (let ((line (buffer-substring-no-properties
-                         (line-beginning-position) (line-end-position))))
-              (when (and (not (string-empty-p line))
-                         (or (< (line-end-position) (point-max)) full-read-p))
-                (condition-case nil
-                    (let ((entry (emacs-pi--jparse line)))
-                      (pcase (emacs-pi--jget entry "type")
-                        ("session" (setq id (emacs-pi--jget entry "id")
-                                         cwd (emacs-pi--jget entry "cwd")
-                                         created (emacs-pi--jget entry "timestamp")))
-                        ("session_info" (setq name (emacs-pi--jget entry "name")))
-                        ("message"
-                         (cl-incf message-count)
-                         (when (equal (emacs-pi--jget
-                                       (emacs-pi--jget entry "message") "role")
-                                      "user")
-                           (let ((text (emacs-pi--message-text
-                                        (emacs-pi--jget entry "message"))))
-                             (when (and text (not (string-empty-p text)))
-                               (unless preview (setq preview text))
-                               (setq last-preview text)))))))
-                  (error nil))))
-            (forward-line 1))
-          (when (and (stringp id) (stringp cwd))
-            (list :id id :cwd cwd :path path :created created
-                  :name name :preview preview :last-preview last-preview
-                  :message-count (and full-read-p message-count)
-                  :modified (file-attribute-modification-time attributes))))))
-    (error nil)))
+            (unless (= (line-beginning-position) (line-end-position))
+              (emacs-pi-history--consume
+               record (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (forward-line 1)))
+      (error (cl-incf (plist-get record :invalid-lines))))
+    (when (stringp (plist-get record :id))
+      (emacs-pi-history--finish-record record))))
 
 (defun emacs-pi-history--cached-record (path)
   "Return PATH's preview, reparsing only when its file metadata changes."
@@ -120,8 +148,109 @@ This is a read-only local index; it never edits Pi's session files."
                                (file-equal-p (plist-get item :cwd) root)))
                         records)))
     (sort records
-          (lambda (a b) (time-less-p (plist-get b :modified)
-                                     (plist-get a :modified))))))
+          (lambda (a b) (time-less-p (or (plist-get b :modified) '(0 0))
+                                     (or (plist-get a :modified) '(0 0)))))))
+
+;;;###autoload
+(cl-defun emacs-pi-list-sessions (on-success &key directories on-error)
+  "Read sessions cooperatively without starting Pi; return a cancel function.
+ON-SUCCESS receives a plist with :items and :diagnostics.  Each item has
+:source (canonical storage directory), :path, :id, :cwd, :preview,
+:modified and :time-source.  Unknown flags use the symbol `unknown'.
+ON-ERROR receives a diagnostic string on fatal failure.  Cancellation
+silently suppresses callbacks.  Partial failures appear in :diagnostics."
+  (let ((pending (mapcar (lambda (dir) (cons (expand-file-name dir) nil))
+                         (or directories (list (emacs-pi-history-directory)))))
+        (seen (make-hash-table :test #'equal))
+        items diagnostics timer cancelled input record source offset size)
+    (cl-labels
+        ((close-input ()
+           (when (buffer-live-p input) (kill-buffer input))
+           (setq input nil))
+         (tick ()
+           (unless cancelled
+             (condition-case err
+                 (let ((budget 100) (deadline (+ (float-time) 0.01)))
+                   (while (and (> budget 0) (< (float-time) deadline)
+                               (or input pending))
+                     (cl-decf budget)
+                     (if input
+                         (with-current-buffer input
+                           (if (and (< offset size)
+                                    (or (eobp)
+                                        (not (save-excursion
+                                               (search-forward "\n" nil t)))))
+                               (let ((start (point))
+                                     (end (min size (+ offset 65536))))
+                                 (delete-region (point-min) start)
+                                 (goto-char (point-max))
+                                 (let ((coding-system-for-read 'no-conversion))
+                                   (insert-file-contents (plist-get record :path)
+                                                         nil offset end))
+                                 (setq offset end)
+                                 (goto-char (point-min)))
+                             (if (eobp)
+                               (progn
+                                 (if (stringp (plist-get record :id))
+                                     (progn
+                                       (setf (plist-get record :source) source)
+                                       (push (emacs-pi-history--finish-record record) items))
+                                   (push (list :path (plist-get record :path)
+                                               :message "Missing session header") diagnostics))
+                                 (when (> (plist-get record :invalid-lines) 0)
+                                   (push (list :path (plist-get record :path)
+                                               :invalid-lines (plist-get record :invalid-lines))
+                                         diagnostics))
+                                 (close-input))
+                             (unless (= (line-beginning-position) (line-end-position))
+                               (emacs-pi-history--consume
+                                record (decode-coding-string
+                                        (buffer-substring-no-properties
+                                         (line-beginning-position) (line-end-position))
+                                        'utf-8)))
+                             (when input (forward-line 1)))))
+                       (pcase-let* ((`(,path . ,root) (pop pending)))
+                         (condition-case nil
+                             (cond
+                              ((file-symlink-p path) nil)
+                              ((file-directory-p path)
+                               (let ((canonical (file-truename path)))
+                                 (unless (gethash canonical seen)
+                                   (puthash canonical t seen)
+                                   (dolist (child (directory-files path t
+                                                                 directory-files-no-dot-files-regexp))
+                                     (push (cons child (or root canonical)) pending)))))
+                              ((string-suffix-p ".jsonl" path)
+                               (let ((canonical (file-truename path)))
+                                 (unless (gethash canonical seen)
+                                   (puthash canonical t seen)
+                                   (setq record (emacs-pi-history--empty-record canonical)
+                                         source root offset 0
+                                         size (file-attribute-size (file-attributes canonical))
+                                         input (generate-new-buffer " *pi-session-scan*"))
+                                   (with-current-buffer input
+                                     (set-buffer-multibyte nil)))))
+                              ((not (file-exists-p path))
+                               (push (list :path path :message "Path does not exist") diagnostics)))
+                           (error
+                            (close-input)
+                            (push (list :path path :message "Cannot read session path") diagnostics))))))
+                   (if (or input pending)
+                       (setq timer (run-at-time 0.01 nil #'tick))
+                     (setq cancelled t)
+                     (funcall on-success
+                              (list :items (nreverse items)
+                                    :diagnostics (nreverse diagnostics)))))
+               (error
+                (setq cancelled t)
+                (close-input)
+                (if on-error (funcall on-error (error-message-string err))
+                  (message "emacs-pi: session scan failed")))))))
+      (setq timer (run-at-time 0 nil #'tick))
+      (lambda ()
+        (setq cancelled t)
+        (when timer (cancel-timer timer))
+        (close-input)))))
 
 (defun emacs-pi-history-session-excerpt (record max-chars)
   "Return the latest active-branch dialogue in RECORD, up to MAX-CHARS.
