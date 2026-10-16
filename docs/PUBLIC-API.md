@@ -30,6 +30,14 @@ size; malformed or partial records produce diagnostics. This is not a
 transactional filesystem snapshot. Internal/subagent and archive status
 remain unknown until reliable producer metadata is supported.
 
+Unchanged files reuse an in-memory cache shared with the synchronous
+history picker. Cache signatures include size, modification/change times,
+inode and device; changed or replaced files are reparsed, and cached
+records retain their diagnostics. Files changed during a read are not
+cached. Only the recognized observation-ledger schema at
+`observation-pack/ledger.jsonl` is excluded; real sessions at that path
+and damaged session files are not silently ignored.
+
 Legacy `emacs-pi-history-list` remains synchronous and uses the same
 parser/cache. It now reads complete previews and sorts by message time;
 unknown times sort last. It does not provide the public API's diagnostics.

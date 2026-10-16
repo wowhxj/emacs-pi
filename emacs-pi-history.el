@@ -19,7 +19,7 @@ When nil, use Pi's environment or default agent directory."
   :type 'integer :group 'emacs-pi)
 
 (defvar emacs-pi-history--cache (make-hash-table :test #'equal)
-  "Session previews keyed by path and file size/mtime.")
+  "Session records keyed by canonical path and filesystem identity/metadata.")
 
 (defun emacs-pi-history-directory ()
   "Return the directory to scan for Pi session JSONL files."
@@ -121,18 +121,44 @@ When nil, use Pi's environment or default agent directory."
     (when (stringp (plist-get record :id))
       (emacs-pi-history--finish-record record))))
 
+(defun emacs-pi-history--signature (attributes)
+  "Return content metadata and identity from file ATTRIBUTES, excluding atime."
+  (when attributes
+    (list (file-attribute-size attributes)
+          (file-attribute-modification-time attributes)
+          (file-attribute-status-change-time attributes)
+          (file-attribute-inode-number attributes)
+          (file-attribute-device-number attributes))))
+
+(defun emacs-pi-history--auxiliary-ledger-p (path)
+  "Recognize an observation ledger, not a Pi session, using location and schema."
+  (and (equal (file-name-nondirectory path) "ledger.jsonl")
+       (equal (file-name-nondirectory (directory-file-name (file-name-directory path)))
+              "observation-pack")
+       (condition-case nil
+           (with-temp-buffer
+             (let ((coding-system-for-read 'utf-8-unix))
+               (insert-file-contents path nil 0 (min 65536 (file-attribute-size (file-attributes path)))))
+             (goto-char (point-min))
+             (let ((entry (emacs-pi--jparse (buffer-substring-no-properties (point) (line-end-position)))))
+               (and (not (emacs-pi--jget entry "type"))
+                    (member (emacs-pi--jget entry "event") '("full" "placeholder"))
+                    (emacs-pi--jget entry "id") (emacs-pi--jget entry "tool")
+                    (emacs-pi--jget entry "request"))))
+         (error nil))))
+
 (defun emacs-pi-history--cached-record (path)
-  "Return PATH's preview, reparsing only when its file metadata changes."
+  "Return PATH's preview, reparsing only when its identity or metadata changes."
+  (setq path (file-truename path))
   (let* ((attributes (file-attributes path))
-         (key (and attributes
-                   (list (file-attribute-size attributes)
-                         (file-attribute-modification-time attributes))))
-         (cached (gethash path emacs-pi-history--cache)))
-    (if (and key (equal key (car cached)))
-        (cdr cached)
-      (let ((record (and key (emacs-pi-history--record path attributes))))
-        (puthash path (cons key record) emacs-pi-history--cache)
-        record))))
+         (key (emacs-pi-history--signature attributes))
+         (cached (gethash path emacs-pi-history--cache))
+         (record (if (and key (equal key (car cached))) (cdr cached)
+                   (and key (if (emacs-pi-history--auxiliary-ledger-p path) '(:auxiliary t)
+                              (emacs-pi-history--record path attributes))))))
+    (when (equal key (emacs-pi-history--signature (file-attributes path)))
+      (puthash path (cons key record) emacs-pi-history--cache))
+    (unless (plist-get record :auxiliary) record)))
 
 (defun emacs-pi-history-list (&optional root)
   "List saved sessions, optionally filtered to ROOT.
@@ -154,6 +180,7 @@ This is a read-only local index; it never edits Pi's session files."
 ;;;###autoload
 (cl-defun emacs-pi-list-sessions (on-success &key directories on-error)
   "Read sessions cooperatively without starting Pi; return a cancel function.
+Unchanged files reuse an in-memory cache; observation ledgers are excluded.
 ON-SUCCESS receives a plist with :items and :diagnostics.  Each item has
 :source (canonical storage directory), :path, :id, :cwd, :preview,
 :modified and :time-source.  Unknown flags use the symbol `unknown'.
@@ -162,15 +189,25 @@ silently suppresses callbacks.  Partial failures appear in :diagnostics."
   (let ((pending (mapcar (lambda (dir) (cons (expand-file-name dir) nil))
                          (or directories (list (emacs-pi-history-directory)))))
         (seen (make-hash-table :test #'equal))
-        items diagnostics timer cancelled input record source offset size)
+        items diagnostics timer cancelled input record source offset size signature)
     (cl-labels
-        ((close-input ()
+        ((record-diagnostics (value)
+           (when (> (plist-get value :invalid-lines) 0)
+             (push (list :path (plist-get value :path)
+                         :invalid-lines (plist-get value :invalid-lines)
+                         :message (format "Invalid session records: %d" (plist-get value :invalid-lines)))
+                   diagnostics)))
+         (accept-record (value)
+           (setf (plist-get value :source) source)
+           (push value items)
+           (record-diagnostics value))
+         (close-input ()
            (when (buffer-live-p input) (kill-buffer input))
            (setq input nil))
          (tick ()
            (unless cancelled
              (condition-case err
-                 (let ((budget 100) (deadline (+ (float-time) 0.01)))
+                 (let ((budget 1000) (deadline (+ (float-time) 0.01)))
                    (while (and (> budget 0) (< (float-time) deadline)
                                (or input pending))
                      (cl-decf budget)
@@ -193,14 +230,15 @@ silently suppresses callbacks.  Partial failures appear in :diagnostics."
                                (progn
                                  (if (stringp (plist-get record :id))
                                      (progn
-                                       (setf (plist-get record :source) source)
-                                       (push (emacs-pi-history--finish-record record) items))
+                                       (setq record (emacs-pi-history--finish-record record))
+                                       (accept-record record)
+                                       (when (equal signature (emacs-pi-history--signature
+                                                               (file-attributes (plist-get record :path))))
+                                         (puthash (plist-get record :path)
+                                                  (cons signature (copy-sequence record)) emacs-pi-history--cache)))
                                    (push (list :path (plist-get record :path)
-                                               :message "Missing session header") diagnostics))
-                                 (when (> (plist-get record :invalid-lines) 0)
-                                   (push (list :path (plist-get record :path)
-                                               :invalid-lines (plist-get record :invalid-lines))
-                                         diagnostics))
+                                               :message "Missing session header") diagnostics)
+                                   (record-diagnostics record))
                                  (close-input))
                              (unless (= (line-beginning-position) (line-end-position))
                                (emacs-pi-history--consume
@@ -221,15 +259,27 @@ silently suppresses callbacks.  Partial failures appear in :diagnostics."
                                                                  directory-files-no-dot-files-regexp))
                                      (push (cons child (or root canonical)) pending)))))
                               ((string-suffix-p ".jsonl" path)
-                               (let ((canonical (file-truename path)))
+                               (let* ((canonical (file-truename path))
+                                      (attributes (file-attributes canonical))
+                                      (key (emacs-pi-history--signature attributes))
+                                      (cached (gethash canonical emacs-pi-history--cache))
+                                      (hit (and key (equal key (car cached)))))
                                  (unless (gethash canonical seen)
                                    (puthash canonical t seen)
-                                   (setq record (emacs-pi-history--empty-record canonical)
-                                         source root offset 0
-                                         size (file-attribute-size (file-attributes canonical))
-                                         input (generate-new-buffer " *pi-session-scan*"))
-                                   (with-current-buffer input
-                                     (set-buffer-multibyte nil)))))
+                                   (setq source root)
+                                   (cond
+                                    ((and hit (plist-get (cdr cached) :auxiliary)) nil)
+                                    ((and hit (stringp (plist-get (cdr cached) :id)))
+                                     (accept-record (copy-sequence (cdr cached))))
+                                    ((emacs-pi-history--auxiliary-ledger-p canonical)
+                                     (when (equal key (emacs-pi-history--signature (file-attributes canonical)))
+                                       (puthash canonical (cons key '(:auxiliary t)) emacs-pi-history--cache)))
+                                    (t
+                                     (setq record (emacs-pi-history--empty-record canonical)
+                                           signature key offset 0
+                                           size (file-attribute-size attributes)
+                                           input (generate-new-buffer " *pi-session-scan*"))
+                                     (with-current-buffer input (set-buffer-multibyte nil)))))))
                               ((not (file-exists-p path))
                                (push (list :path path :message "Path does not exist") diagnostics)))
                            (error

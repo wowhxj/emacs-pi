@@ -16,6 +16,93 @@
     (should (= (plist-get record :invalid-lines) 1))
     (should-not (plist-get record :empty))))
 
+(defun emacs-pi-api-test--scan (directory)
+  "Await one metadata-only scan of DIRECTORY."
+  (let (result failure)
+    (emacs-pi-list-sessions (lambda (value) (setq result value))
+                            :directories (list directory)
+                            :on-error (lambda (error) (setq failure error)))
+    (let ((deadline (+ (float-time) 5)))
+      (while (and (not result) (not failure) (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (should-not failure) (should result)
+    result))
+
+(ert-deftest emacs-pi-api-cache-reuses-records-and-replays-diagnostics ()
+  (let* ((directory (make-temp-file "pi-cache-api-" t))
+         (path (expand-file-name "session.jsonl" directory))
+         (emacs-pi-history--cache (make-hash-table :test #'equal))
+         (consume (symbol-function 'emacs-pi-history--consume)) (calls 0))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (insert "{\"type\":\"session\",\"id\":\"a\",\"cwd\":\"/tmp\"}\n"
+                    "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"first\",\"timestamp\":1000}}\n"
+                    "broken\n"))
+          (cl-letf (((symbol-function 'emacs-pi-history--consume)
+                     (lambda (&rest args) (cl-incf calls) (apply consume args))))
+            (let ((first (emacs-pi-api-test--scan directory)))
+              (should (> calls 0))
+              (should (plist-get first :diagnostics))
+              (setq calls 0)
+              (let ((second (emacs-pi-api-test--scan directory)))
+                (should (zerop calls))
+                (should (equal (plist-get first :items) (plist-get second :items)))
+                (should (equal (plist-get first :diagnostics) (plist-get second :diagnostics)))))
+            (write-region "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"reply\",\"timestamp\":2000}}\n"
+                          nil path t 'silent)
+            (setq calls 0)
+            (let ((changed (emacs-pi-api-test--scan directory)))
+              (should (> calls 0))
+              (should (= (float-time (plist-get (car (plist-get changed :items)) :modified)) 2)))))
+      (delete-directory directory t))))
+
+(ert-deftest emacs-pi-api-cache-detects-same-size-file-replacement ()
+  (let* ((directory (make-temp-file "pi-replace-api-" t))
+         (path (expand-file-name "session.jsonl" directory))
+         (replacement (expand-file-name "replacement.tmp" directory))
+         (emacs-pi-history--cache (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (with-temp-file path (insert "{\"type\":\"session\",\"id\":\"a\",\"cwd\":\"/tmp\"}\n"))
+          (emacs-pi-api-test--scan directory)
+          (let ((mtime (file-attribute-modification-time (file-attributes path))))
+            (with-temp-file replacement (insert "{\"type\":\"session\",\"id\":\"b\",\"cwd\":\"/tmp\"}\n"))
+            (set-file-times replacement mtime)
+            (rename-file replacement path t))
+          (should (equal (plist-get (car (plist-get (emacs-pi-api-test--scan directory) :items)) :id) "b")))
+      (delete-directory directory t))))
+
+(ert-deftest emacs-pi-api-skips-observation-ledgers-but-reports-broken-sessions ()
+  (let* ((directory (make-temp-file "pi-ledger-api-" t))
+         (ledger (expand-file-name "sol-pi/example/observation-pack/ledger.jsonl" directory))
+         (broken (expand-file-name "broken.jsonl" directory))
+         (emacs-pi-history--cache (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory ledger) t)
+          (with-temp-file ledger
+            (insert "{\"event\":\"full\",\"id\":\"obs\",\"request\":1,\"tool\":\"read\",\"originalTokens\":10}\n"))
+          (with-temp-file broken (insert "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"lost header\",\"timestamp\":1000}}\n"))
+          (let* ((result (emacs-pi-api-test--scan directory)) (notes (plist-get result :diagnostics)))
+            (should-not (plist-get result :items))
+            (should (= (length notes) 1))
+            (should (equal (plist-get (car notes) :path) (file-truename broken)))))
+      (delete-directory directory t))))
+
+(ert-deftest emacs-pi-api-does-not-ignore-real-session-in-ledger-location ()
+  (let* ((directory (make-temp-file "pi-real-ledger-api-" t))
+         (path (expand-file-name "observation-pack/ledger.jsonl" directory))
+         (emacs-pi-history--cache (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory path) t)
+          (with-temp-file path (insert "{\"type\":\"session\",\"id\":\"real\",\"cwd\":\"/tmp\"}\n"))
+          (let ((result (emacs-pi-api-test--scan directory)))
+            (should (= (length (plist-get result :items)) 1))
+            (should-not (plist-get result :diagnostics))))
+      (delete-directory directory t))))
+
 (ert-deftest emacs-pi-api-display-none-keeps-window ()
   (let ((original (window-buffer)) (buffer (generate-new-buffer " *pi-api-test*")))
     (unwind-protect
