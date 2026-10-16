@@ -1,4 +1,6 @@
 *.elc
+*-autoloads.el
+/emacs-pi-pkg.el
 *~
 .DS_Store
 .cache/
