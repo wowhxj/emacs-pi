@@ -873,6 +873,36 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-process-text-and-tool-details-use-separate-lines ()
+  (let* ((root (make-temp-file "emacs-pi-process-text-" t))
+         (tool (emacs-pi--jobject "type" "toolCall" "id" "call"
+                                  "name" "codemode"))
+         (assistant (emacs-pi--jobject
+                     "role" "assistant" "content"
+                     (vector (emacs-pi--jobject "type" "text"
+                                                "text" "Progress update")
+                             tool)))
+         (session (make-emacs-pi-session
+                   :root root :client-id "text-tool-123456" :phase 'ready
+                   :running t :tools (make-hash-table :test #'equal)
+                   :messages (list (emacs-pi--jobject "role" "user"
+                                                      "content" "Do task")
+                                   assistant)))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-ui-render session)
+          (let* ((rendered (buffer-string))
+                 (text-pos (string-match "Progress update" rendered))
+                 (line-break (and text-pos (string-match "\n" rendered text-pos)))
+                 (tool-pos (string-match "▸ ● codemode" rendered)))
+            (should text-pos)
+            (should line-break)
+            (should tool-pos)
+            (should (< text-pos line-break tool-pos))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-process-items-align-with-first-item ()
   (let* ((root (make-temp-file "emacs-pi-align-" t))
          (emacs-pi-show-thinking t)

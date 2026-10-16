@@ -394,7 +394,8 @@ When COLUMN is non-nil, align details on following lines to that column."
 (defun emacs-pi-ui--insert-blocks (message session &optional final-only detail-column)
   "Insert MESSAGE content; FINAL-ONLY skips intermediate steps.
 Align subsequent step headings to DETAIL-COLUMN when non-nil."
-  (let ((content (emacs-pi--jget message "content")))
+  (let ((content (emacs-pi--jget message "content"))
+        (text-seen nil))
     (cond
      ((stringp content)
       (insert (emacs-pi-ui--markdown
@@ -402,9 +403,12 @@ Align subsequent step headings to DETAIL-COLUMN when non-nil."
      ((vectorp content)
       (dolist (block (append content nil))
         (pcase (emacs-pi--jget block "type")
-          ("text" (insert (emacs-pi-ui--markdown
-                            (emacs-pi-ui--visible-message-text
-                             message (or (emacs-pi--jget block "text") "")))))
+          ("text"
+           (let ((text (emacs-pi-ui--visible-message-text
+                        message (or (emacs-pi--jget block "text") ""))))
+             (insert (emacs-pi-ui--markdown text))
+             (unless (string-empty-p text)
+               (setq text-seen t))))
           ("thinking"
            (when (and (not final-only)
                       (boundp 'emacs-pi-show-thinking) emacs-pi-show-thinking)
@@ -412,12 +416,14 @@ Align subsequent step headings to DETAIL-COLUMN when non-nil."
                     (summary (truncate-string-to-width
                               (replace-regexp-in-string "[\r\n]+" " " thought)
                               100 nil nil "…")))
+               (when (and text-seen (not (bolp))) (insert "\n"))
                (emacs-pi-ui--insert-detail
                 (concat "✻ Thinking: " summary) thought
                 (format "thinking:%d" (cl-incf emacs-pi--detail-index))
                 detail-column))))
           ("toolCall"
            (unless final-only
+             (when (and text-seen (not (bolp))) (insert "\n"))
              (let* ((id (emacs-pi--jget block "id"))
                   (name (or (emacs-pi--jget block "name") "tool"))
                   (state (and id (gethash id (emacs-pi-session-tools session))))
