@@ -260,6 +260,60 @@ receives a diagnostic string.  A terminal callback runs at most once."
       buffer)))
 
 ;;;###autoload
+(cl-defun emacs-pi-create-session
+    (directory &key session-directory (display 'current) on-ready on-error)
+  "Create a fresh Pi session in existing local DIRECTORY without a picker.
+Return its buffer immediately.  ON-READY receives the buffer after the
+new RPC connection answers get_state; ON-ERROR receives a diagnostic.
+SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
+  (unless (and (stringp directory) (not (file-remote-p directory))
+               (file-directory-p directory))
+    (user-error "An existing local project directory is required"))
+  (let* ((root (emacs-pi--local-root directory))
+         (emacs-pi-session-directory (or session-directory emacs-pi-session-directory))
+         (buffer (emacs-pi--open root nil 'none))
+         (session (buffer-local-value 'emacs-pi--session buffer))
+         (generation (emacs-pi-session-generation session))
+         (deadline (+ (float-time) 35)) timer done)
+    (emacs-pi--show-chat buffer display)
+    (cl-labels
+        ((finish (failure)
+           (unless done
+             (setq done t)
+             (when timer (cancel-timer timer))
+             (if failure
+                 (if on-error (funcall on-error failure) (message "emacs-pi: %s" failure))
+               (when on-ready (funcall on-ready buffer)))))
+         (check ()
+           (cond
+            ((not (buffer-live-p buffer)) (finish "Pi chat buffer was killed"))
+            ((/= generation (emacs-pi-session-generation session)) (finish "Pi connection changed during creation"))
+            ((> (float-time) deadline) (finish "Pi session creation timed out; a session may already exist"))
+            ((eq (emacs-pi-session-phase session) 'dead)
+             (finish (or (emacs-pi-session-error session) "Pi process exited")))
+            ((eq (emacs-pi-session-phase session) 'ready)
+             (let ((connection (emacs-pi-session-connection session)))
+               (if (not (and connection (process-live-p (emacs-pi-rpc-process connection))))
+                   (finish "Pi connection is not live")
+                 (cancel-timer timer)
+                 (setq timer (run-at-time 30 nil #'finish "Pi state check timed out; a session may already exist"))
+                 (emacs-pi-rpc-request
+                  connection "get_state" nil
+                  (lambda (result)
+                    (let ((id (emacs-pi--jget (plist-get result :data) "sessionId")))
+                      (finish
+                       (unless (and (plist-get result :ok) (stringp id) (not (string-empty-p id))
+                                    (buffer-live-p buffer) (= generation (emacs-pi-session-generation session))
+                                    (eq connection (emacs-pi-session-connection session))
+                                    (eq (emacs-pi-session-phase session) 'ready)
+                                    (eq (emacs-pi-rpc-status connection) 'ready)
+                                    (process-live-p (emacs-pi-rpc-process connection))
+                                    (equal root (emacs-pi-session-root session)))
+                         "Pi new session could not be verified")))))))))))
+      (setq timer (run-at-time 0.01 0.05 #'check)))
+    buffer))
+
+;;;###autoload
 (defun emacs-pi-chat (&optional root)
   "Choose a saved Pi session in ROOT, or start a new one."
   (interactive)

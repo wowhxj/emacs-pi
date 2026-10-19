@@ -103,6 +103,47 @@
             (should-not (plist-get result :diagnostics))))
       (delete-directory directory t))))
 
+(ert-deftest emacs-pi-api-create-is-fresh-hidden-and-sends-no-prompt ()
+  (let* ((directory (make-temp-file "pi-create-api-" t))
+         (emacs-pi-executable (executable-find "python3"))
+         (emacs-pi-extra-arguments nil)
+         (emacs-pi--chats (make-hash-table :test #'equal))
+         (original-window (window-buffer)) buffers (ready 0) failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) (ert-fail "Unexpected picker")))
+                  ((symbol-function 'emacs-pi-rpc-start)
+                   (let ((original (symbol-function 'emacs-pi-rpc-start)))
+                     (lambda (id generation root args event exit &optional env)
+                       (should-not (member "--session" args))
+                       (should-not (member "--resume" args))
+                       (should (equal (file-truename root) (file-name-as-directory (file-truename directory))))
+                       (funcall original id generation root
+                                (cons (expand-file-name "test/fake-pi.py" (file-name-directory (locate-library "emacs-pi"))) args)
+                                event exit env)))))
+          (dotimes (_ 2)
+            (push (emacs-pi-create-session directory :display 'none
+                                           :on-ready (lambda (_buffer) (cl-incf ready))
+                                           :on-error (lambda (error) (setq failure error))) buffers))
+          (let ((deadline (+ (float-time) 5)))
+            (while (and (< ready 2) (not failure) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not failure) (should (= ready 2))
+          (should-not (eq (car buffers) (cadr buffers)))
+          (should (eq original-window (window-buffer)))
+          (dolist (buffer buffers)
+            (with-current-buffer buffer
+              (should (zerop (length (emacs-pi-session-messages emacs-pi--session)))))))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer (emacs-pi-session-shutdown emacs-pi--session))
+          (kill-buffer buffer)))
+      (delete-directory directory t))))
+
+(ert-deftest emacs-pi-api-create-rejects-missing-or-remote-project ()
+  (cl-letf (((symbol-function 'emacs-pi--open) (lambda (&rest _) (ert-fail "Started invalid project"))))
+    (should-error (emacs-pi-create-session "/ssh:invalid:/project") :type 'user-error)
+    (should-error (emacs-pi-create-session (make-temp-name "/tmp/missing-pi-project-")) :type 'user-error)))
+
 (ert-deftest emacs-pi-api-display-none-keeps-window ()
   (let ((original (window-buffer)) (buffer (generate-new-buffer " *pi-api-test*")))
     (unwind-protect

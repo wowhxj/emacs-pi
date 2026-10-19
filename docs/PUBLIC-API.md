@@ -42,6 +42,22 @@ Legacy `emacs-pi-history-list` remains synchronous and uses the same
 parser/cache. It now reads complete previews and sorts by message time;
 unknown times sort last. It does not provide the public API's diagnostics.
 
+## Create without a history picker
+
+```elisp
+(emacs-pi-create-session
+ "/absolute/project" :display 'none
+ :on-ready (lambda (buffer) (pop-to-buffer buffer))
+ :on-error (lambda (error) (message "%s" error)))
+```
+
+The directory must exist and be local. Each call starts a fresh RPC session;
+no resume arguments or initial prompt are sent. Storage can be selected with
+`:session-directory`. The buffer is returned immediately; readiness follows a
+live `get_state` response and generation check. A new session file is not
+required to exist before its first message. Cancellation/timeout does not
+promise to stop an already launched client.
+
 ## Restore a selected file
 
 ```elisp
