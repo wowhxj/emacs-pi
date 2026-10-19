@@ -242,5 +242,28 @@
       (delete-file path)
       (delete-directory dir))))
 
+(ert-deftest emacs-pi-api-reference-provider-replaces-at-name ()
+  (let* ((root (file-name-as-directory (make-temp-file "emacs-pi-provider-" t)))
+         (session (make-emacs-pi-session :root root :client-id "provider-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session))
+         (emacs-pi-reference-providers
+          (list (cons "ashub" (lambda (directory)
+                                (should (equal directory root))
+                                "/cache/ref one.md")))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "see @ashub")
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) (ert-fail "Path picker opened"))))
+            (emacs-pi-complete))
+          (should (equal (emacs-pi-input-text) "see @\"/cache/ref one.md\""))
+          (let ((emacs-pi-reference-providers nil))
+            (emacs-pi-input-set "see @ashub")
+            (should (eq (plist-get (emacs-pi-input--completion-context) :kind)
+                        'reference))))
+      (kill-buffer buffer)
+      (delete-directory root t))))
+
 (provide 'public-api-test)
 ;;; public-api-test.el ends here

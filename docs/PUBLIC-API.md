@@ -86,6 +86,12 @@ recovery and cross-directory behavior remain unverified; do not interpret
 of open requests and generation-race hardening are not yet implemented.
 This development API is not final acceptance of the full ashub plan.
 
+## External @ references
+
+`emacs-pi-reference-providers` maps a name to a function. `TAB` on `@NAME`
+calls it with the chat root; a returned file path replaces `@NAME` with an
+@ reference. Unregistered names keep ordinary path completion.
+
 # 中文摘要
 
 提供只读、可取消的异步枚举和指定文件恢复接口。枚举不启动 Pi，

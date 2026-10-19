@@ -60,6 +60,12 @@
   "@\\[[^]\n]*\\](pi-session:\\([[:alnum:]_-]+\\))"
   "Pattern for client-side Pi session references.")
 
+(defcustom emacs-pi-reference-providers nil
+  "Alist of (NAME . FUNCTION) for external @NAME references.
+TAB on @NAME calls FUNCTION with the chat root.  It returns a file path to
+insert as an @ reference, or nil to leave the draft unchanged."
+  :type '(alist :key-type string :value-type function) :group 'emacs-pi)
+
 (defcustom emacs-pi-pngpaste-executable "pngpaste"
   "Program used to paste a macOS clipboard image as PNG.
 Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
@@ -248,6 +254,11 @@ On macOS, `pngpaste' converts the current clipboard image to PNG."
                         "")))
           (list :kind 'session :start start
                 :end (point) :original token :query query)))
+       ((and (string-match "\\(?:\\`\\|[[:space:]]\\)\\(@\\([[:alnum:]_-]+\\)\\)\\'" head)
+             (assoc (match-string 2 head) emacs-pi-reference-providers))
+        (list :kind 'provider :start (+ begin (match-beginning 1)) :end (point)
+              :original (match-string 1 head)
+              :provider (cdr (assoc (match-string 2 head) emacs-pi-reference-providers))))
        ((string-match
          "\\(?:\\`\\|[[:space:]]\\)\\(@\\(?:\"[^\"]*\\|[^[:space:]\" ]*\\)\\)\\'"
          head)
@@ -381,6 +392,22 @@ the directory whose contents should be offered."
     (cond
      ((not context)
       (message "TAB completes @ paths, @session references, and / commands"))
+     ((eq kind 'provider)
+      ;; Markers survive transcript output inserted while the provider prompts.
+      (let ((start (copy-marker (plist-get context :start)))
+            (end (copy-marker (plist-get context :end) t)))
+        (unwind-protect
+            (when-let* ((path (funcall (plist-get context :provider)
+                                       (emacs-pi-session-root emacs-pi--session))))
+              (if (equal (buffer-substring-no-properties start end)
+                         (plist-get context :original))
+                  (progn
+                    (delete-region start end)
+                    (goto-char start)
+                    (insert (emacs-pi-input--file-mention path)))
+                (message "Pi draft changed; press TAB again")))
+          (set-marker start nil)
+          (set-marker end nil))))
      ((null choices)
       (message "No matching Pi completion candidates"))
      (t
