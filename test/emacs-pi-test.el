@@ -81,6 +81,15 @@
                            (plist-get partial :entries))
                    '("recent")))))
 
+(ert-deftest emacs-pi-history-uses-configured-rpc-timeout ()
+  (let ((session (make-emacs-pi-session :generation 1 :connection 'connection))
+        captured-timeout)
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (_connection _command _arguments _callback &optional timeout)
+                 (setq captured-timeout timeout))))
+      (emacs-pi-session--refresh-history session)
+      (should (= captured-timeout emacs-pi-history-request-timeout)))))
+
 (ert-deftest emacs-pi-history-selects-entry-near-recent-byte-window ()
   (let ((file (make-temp-file "emacs-pi-history-window-")))
     (unwind-protect

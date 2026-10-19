@@ -78,7 +78,8 @@ Large session files are fetched from a recent byte-window using Pi's
                      (emacs-pi-session-tools session)
                      (emacs-pi-session--tools-from-messages messages))
                (emacs-pi-session--changed session 'history))))
-         (when callback (funcall callback result)))))))
+         (when callback (funcall callback result))))
+     emacs-pi-history-request-timeout)))
 
 (defun emacs-pi-session-refresh-stats (session)
   "Refresh SESSION's current context usage from Pi."

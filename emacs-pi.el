@@ -203,7 +203,8 @@ receives a diagnostic string.  A terminal callback runs at most once."
            (buffer (or existing (emacs-pi--open root path 'none)))
            (session (buffer-local-value 'emacs-pi--session buffer))
            (generation nil)
-           (deadline (+ (float-time) 35))
+           (deadline (+ (float-time)
+                        (max 35 (+ emacs-pi-history-request-timeout 10))))
            (done nil)
            timer)
       (when existing

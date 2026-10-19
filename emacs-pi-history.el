@@ -18,6 +18,10 @@ When nil, use Pi's environment or default agent directory."
   "Approximate total dialogue characters added for @session references."
   :type 'integer :group 'emacs-pi)
 
+(defcustom emacs-pi-history-request-timeout 180
+  "Seconds to wait for Pi to return session history over RPC."
+  :type 'number :group 'emacs-pi)
+
 (defvar emacs-pi-history--cache (make-hash-table :test #'equal)
   "Session records keyed by canonical path and filesystem identity/metadata.")
 

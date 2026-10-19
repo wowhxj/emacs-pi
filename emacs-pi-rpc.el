@@ -174,7 +174,8 @@ Return request ID or nil when no live process exists."
                          (lambda ()
                            (emacs-pi-rpc--settle
                             connection id
-                            '(:ok nil :kind timeout :message "Pi response timed out"
+                            (list :ok nil :kind timeout
+                                  :message (format "Pi response timed out (%s)" command)
                                   :uncertain-p t)))))
       (condition-case err
           (process-send-string (emacs-pi-rpc-process connection)
