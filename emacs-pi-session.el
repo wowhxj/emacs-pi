@@ -15,7 +15,7 @@
   phase running compacting waiting model thinking messages active-message
   tools active-tool context-usage steering follow-up queue-known queue-attachments
   queue-rewriting
-  last-prompt error
+  last-prompt error history-truncated-notified
   commands executable arguments environment on-change on-extension)
 
 (defun emacs-pi-session--changed (session kind &optional data)
@@ -26,11 +26,12 @@
                  (list :kind kind :data data))
       (error (message "emacs-pi UI error: %s" (error-message-string err))))))
 
-(defun emacs-pi-session--messages-from-entries (response)
-  "Return active branch messages from get_entries RESPONSE."
+(defun emacs-pi-session--messages-from-entries (response &optional allow-truncated)
+  "Return active branch messages from get_entries RESPONSE.
+ALLOW-TRUNCATED permits the returned branch to start at a missing parent."
   (let* ((branch (emacs-pi-history-active-branch
                   (emacs-pi--jget response "entries")
-                  (emacs-pi--jget response "leafId"))))
+                  (emacs-pi--jget response "leafId") allow-truncated)))
     (when (plist-get branch :ok)
       (delq nil (mapcar (lambda (entry)
                           (when (equal (emacs-pi--jget entry "type") "message")
@@ -53,15 +54,25 @@
     tools))
 
 (defun emacs-pi-session--refresh-history (session &optional callback)
-  "Reload active branch for SESSION, then call CALLBACK."
-  (let ((generation (emacs-pi-session-generation session)))
+  "Reload active branch for SESSION, then call CALLBACK.
+Large session files are fetched from a recent byte-window using Pi's
+`get_entries' since parameter."
+  (let* ((generation (emacs-pi-session-generation session))
+         (file (emacs-pi-session-session-file session))
+         (since (and (stringp file) (file-readable-p file)
+                     (emacs-pi-history-entry-after-byte-window
+                      file emacs-pi-rpc-max-record-bytes)))
+         (arguments (and since (emacs-pi--jobject "since" since))))
     (emacs-pi-rpc-request
-     (emacs-pi-session-connection session) "get_entries" nil
+     (emacs-pi-session-connection session) "get_entries" arguments
      (lambda (result)
        (when (= generation (emacs-pi-session-generation session))
+         (when (and since (not (emacs-pi-session-history-truncated-notified session)))
+           (setf (emacs-pi-session-history-truncated-notified session) t)
+           (message "emacs-pi: showing only recent history for this large session"))
          (when (plist-get result :ok)
            (let ((messages (emacs-pi-session--messages-from-entries
-                            (plist-get result :data))))
+                            (plist-get result :data) since)))
              (when (listp messages)
                (setf (emacs-pi-session-messages session) messages
                      (emacs-pi-session-tools session)

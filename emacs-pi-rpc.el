@@ -15,7 +15,9 @@
 (cl-defstruct emacs-pi-rpc-pending command callback timer)
 
 (defvar emacs-pi-rpc-default-timeout 30)
-(defvar emacs-pi-rpc-max-record-bytes (* 64 1024 1024))
+(defcustom emacs-pi-rpc-max-record-bytes (* 128 1024 1024)
+  "Maximum byte size accepted for one Pi RPC record."
+  :type 'integer :group 'emacs-pi)
 (defvar emacs-pi-rpc-max-backlog-bytes (* 128 1024 1024))
 
 (defun emacs-pi-rpc--deliver (callback &rest arguments)

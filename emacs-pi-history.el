@@ -29,8 +29,10 @@ When nil, use Pi's environment or default agent directory."
        (expand-file-name "sessions" (or (getenv "PI_CODING_AGENT_DIR")
                                           "~/.pi/agent")))))
 
-(defun emacs-pi-history-active-branch (entries leaf-id)
-  "Return (:ok t :entries LIST) for ENTRIES along LEAF-ID ancestry."
+(defun emacs-pi-history-active-branch (entries leaf-id &optional allow-truncated)
+  "Return active branch in ENTRIES from LEAF-ID.
+When ALLOW-TRUNCATED is non-nil, a missing parent at the beginning is
+accepted as the root of a partial history."
   (let ((table (make-hash-table :test #'equal))
         (seen (make-hash-table :test #'equal))
         (cursor leaf-id)
@@ -42,7 +44,10 @@ When nil, use Pi's environment or default agent directory."
     (while (and (stringp cursor) (not error-kind))
       (cond
        ((gethash cursor seen) (setq error-kind 'cycle))
-       ((not (gethash cursor table)) (setq error-kind 'missing-parent))
+       ((not (gethash cursor table))
+        (if allow-truncated
+            (setq cursor nil)
+          (setq error-kind 'missing-parent)))
        (t (puthash cursor t seen)
           (let ((entry (gethash cursor table)))
             (push entry branch)
@@ -50,6 +55,35 @@ When nil, use Pi's environment or default agent directory."
     (if error-kind
         (list :ok nil :kind error-kind :id cursor)
       (list :ok t :entries branch))))
+
+(defun emacs-pi-history-entry-after-byte-window (path max-bytes)
+  "Return an entry ID to pass as `get_entries' since for PATH.
+If PATH exceeds MAX-BYTES, return an ID near the start of its recent
+MAX-BYTES suffix.  A 1 MiB margin is reserved for the RPC envelope and
+JSON serialization overhead."
+  (let* ((size (file-attribute-size (file-attributes path)))
+         (window (max 1 (- max-bytes (* 1024 1024)))))
+    (when (> size max-bytes)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (let* ((end-byte (or (position-bytes (point-max)) 1))
+               (offset (max 1 (- end-byte window)))
+               (position (or (byte-to-position offset) (point-min))))
+          (goto-char position)
+          (unless (bolp) (forward-line 1))
+          (let (id done)
+            (while (and (not done) (not (eobp)))
+              (let ((entry (condition-case nil
+                               (emacs-pi--jparse
+                                (buffer-substring-no-properties
+                                 (line-beginning-position) (line-end-position)))
+                             (error nil))))
+                (setq id (and entry
+                              (not (equal (emacs-pi--jget entry "type") "session"))
+                              (emacs-pi--jget entry "id"))
+                      done (stringp id)))
+              (unless done (forward-line 1)))
+            id))))))
 
 (defun emacs-pi-history--consume (record line)
   "Accumulate one JSON LINE into mutable plist RECORD."

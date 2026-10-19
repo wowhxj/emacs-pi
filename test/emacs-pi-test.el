@@ -72,6 +72,32 @@
                                       :entries))
                    '("a" "b" "e" "f")))))
 
+(ert-deftest emacs-pi-active-branch-allows-truncated-parent ()
+  (let* ((entries (vector (emacs-pi--jobject "id" "recent" "parentId" "older")))
+         (strict (emacs-pi-history-active-branch entries "recent"))
+         (partial (emacs-pi-history-active-branch entries "recent" t)))
+    (should-not (plist-get strict :ok))
+    (should (equal (mapcar (lambda (entry) (emacs-pi--jget entry "id"))
+                           (plist-get partial :entries))
+                   '("recent")))))
+
+(ert-deftest emacs-pi-history-selects-entry-near-recent-byte-window ()
+  (let ((file (make-temp-file "emacs-pi-history-window-")))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "{\"type\":\"session\",\"id\":\"session\"}\n")
+            (dotimes (index 5)
+              (insert (emacs-pi--jencode
+                       (emacs-pi--jobject "type" "message"
+                                          "id" (format "entry-%d" (1+ index))
+                                          "payload" (make-string (* 600 1024) ?x)))
+                      "\n")))
+          (let ((since (emacs-pi-history-entry-after-byte-window
+                        file (* 2 1024 1024))))
+            (should (member since '("entry-4" "entry-5")))))
+      (delete-file file))))
+
 (ert-deftest emacs-pi-two-chats-and-streaming-draft ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
