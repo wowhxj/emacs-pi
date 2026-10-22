@@ -516,7 +516,7 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
       (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
       (princ "C-c C-l queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
       (princ "Queue: RET edit · M-up/down reorder · s/f lane · d delete · C-c C-c apply\n")
-      (princ "i focus input from history · C-a stay after You>\n")
+      (princ "C-c C-t copy mode · C-c C-j return to input · C-a stay after You>\n")
       (princ "RET/TAB on a Process or tool heading toggles its steps\n")
       (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n")
       (princ "C-c C-o opens the image at point; click × to remove an attachment.\n\n")

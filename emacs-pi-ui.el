@@ -67,6 +67,8 @@
     (define-key map (kbd "C-c C-r") #'emacs-pi-resume)
     (define-key map (kbd "C-c C-b") #'emacs-pi-switch-chat)
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)
+    (define-key map (kbd "C-c C-t") #'emacs-pi-copy-mode)
+    (define-key map (kbd "C-c C-j") #'emacs-pi-semi-char-mode)
     (define-key map (kbd "C-c C-p") #'emacs-pi-paste)
     (define-key map (kbd "C-c C-o") #'emacs-pi-input-open-image)
     (define-key map (kbd "s-v") #'emacs-pi-paste)
@@ -75,11 +77,20 @@
     (define-key map (kbd "M-n") #'emacs-pi-next-prompt)
     (define-key map (kbd "TAB") #'emacs-pi-ui-tab)
     (define-key map (kbd "M-TAB") #'emacs-pi-complete)
-    (define-key map (kbd "i") #'emacs-pi-ui-focus-or-insert)
     (define-key map (kbd "C-a") #'emacs-pi-ui-beginning-of-line)
     map)
   "Local keys for the Pi chat buffer.")
 
+(defvar emacs-pi-copy-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-j") #'emacs-pi-semi-char-mode)
+    (define-key map (kbd "C-a") #'move-beginning-of-line)
+    (define-key map (kbd "M-p") #'backward-paragraph)
+    (define-key map (kbd "M-n") #'forward-paragraph)
+    map)
+  "Keys for navigating and copying the frozen Pi transcript.")
+
+(defvar-local emacs-pi--copy-mode nil)
 (defvar-local emacs-pi--session nil)
 (defvar-local emacs-pi--input-marker nil)
 (defvar-local emacs-pi--render-timer nil)
@@ -124,13 +135,26 @@
   (add-hook 'after-change-functions #'emacs-pi-ui--changed nil t)
   (add-hook 'kill-buffer-hook #'emacs-pi-ui--cleanup nil t))
 
-(defun emacs-pi-ui-focus-or-insert ()
-  "Jump to the composer from history; insert i inside the composer."
+(defun emacs-pi-copy-mode ()
+  "Freeze transcript updates for navigation and copying."
   (interactive)
-  (if (< (point) (emacs-pi-input-beginning))
-      (emacs-pi-focus-input)
-    (let ((last-command-event ?i))
-      (self-insert-command 1))))
+  (setq emacs-pi--copy-mode t)
+  (setq-local minor-mode-overriding-map-alist
+              (assq-delete-all 'emacs-pi--copy-mode minor-mode-overriding-map-alist))
+  (push (cons 'emacs-pi--copy-mode emacs-pi-copy-mode-map)
+        minor-mode-overriding-map-alist)
+  (force-mode-line-update t)
+  (message "Pi copy mode; C-c C-j returns to input"))
+
+(defun emacs-pi-semi-char-mode ()
+  "Resume transcript updates and move to the composer."
+  (interactive)
+  (setq emacs-pi--copy-mode nil)
+  (setq-local minor-mode-overriding-map-alist
+              (assq-delete-all 'emacs-pi--copy-mode minor-mode-overriding-map-alist))
+  (emacs-pi-ui-render emacs-pi--session)
+  (emacs-pi-focus-input)
+  (force-mode-line-update t))
 
 (defun emacs-pi-ui-beginning-of-line ()
   "Move to line start without entering the protected composer prompt."
@@ -178,7 +202,7 @@
            (follow-up (length (emacs-pi--array-list
                                (emacs-pi-session-follow-up session)))))
       (propertize
-       (format " Pi %s%s%s"
+       (format " Pi %s%s%s%s"
                (cond ((eq phase 'dead) "disconnected")
                      ((not (eq phase 'ready)) "connecting")
                      ((emacs-pi-session-compacting session) "compacting")
@@ -190,7 +214,8 @@
                  "")
                (if (or (> steering 0) (> follow-up 0))
                    (format " [S%d F%d]" steering follow-up)
-                 ""))
+                 "")
+               (if emacs-pi--copy-mode " COPY" ""))
        'face 'emacs-pi-status-face))))
 
 (defun emacs-pi-ui--sync-spinner ()
@@ -619,11 +644,12 @@ ACTIVE-P means this is the turn currently being processed by Pi."
   (when-let* ((buffer (emacs-pi-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (emacs-pi-ui--sync-fold-state session)
-        (let* ((inhibit-read-only t)
-               (at-end (>= (point) (max (point-min) (- (emacs-pi-input-end) 1))))
-               (start (marker-position emacs-pi--input-marker))
-               (buffer-undo-list t))
+        (unless emacs-pi--copy-mode
+          (emacs-pi-ui--sync-fold-state session)
+          (let* ((inhibit-read-only t)
+                 (at-end (>= (point) (max (point-min) (- (emacs-pi-input-end) 1))))
+                 (start (marker-position emacs-pi--input-marker))
+                 (buffer-undo-list t))
           (mapc #'delete-overlay emacs-pi--user-overlays)
           (setq emacs-pi--user-overlays nil)
           (mapc #'delete-overlay emacs-pi--process-overlays)
@@ -648,16 +674,17 @@ ACTIVE-P means this is the turn currently being processed by Pi."
                           (1+ (marker-position emacs-pi--input-marker))
                           (point-max))
             (emacs-pi-ui--set-input-background))
-          (when at-end (goto-char (emacs-pi-input-end)))
-          (force-mode-line-update t))))))
+            (when at-end (goto-char (emacs-pi-input-end)))
+            (force-mode-line-update t)))))))
 
 (defun emacs-pi-ui-schedule (session _change)
   "Coalesce output updates for SESSION."
   (when-let* ((buffer (emacs-pi-session-buffer session)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (emacs-pi-ui--sync-fold-state session)
-        (emacs-pi-ui--sync-spinner)
+        (unless emacs-pi--copy-mode
+          (emacs-pi-ui--sync-fold-state session)
+          (emacs-pi-ui--sync-spinner))
         (unless emacs-pi--render-timer
           (setq emacs-pi--render-timer
                 (run-at-time 0.05 nil
