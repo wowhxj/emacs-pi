@@ -73,6 +73,7 @@
 ## 配置
 
 - `emacs-pi-executable`：Pi 可执行文件路径，默认 `pi`
+- `emacs-pi-startup-timeout`：等待 Pi 首次 RPC 回复的秒数，默认 90
 - `emacs-pi-extra-arguments`：传给 Pi RPC 进程的额外参数
 - `emacs-pi-session-directory`：可选的 Pi 会话目录
 - `emacs-pi-show-thinking`：是否在对话中显示 thinking 文本

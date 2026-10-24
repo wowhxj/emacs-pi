@@ -90,6 +90,20 @@
       (emacs-pi-session--refresh-history session)
       (should (= captured-timeout emacs-pi-history-request-timeout)))))
 
+(ert-deftest emacs-pi-startup-uses-configured-timeout ()
+  (let ((session (make-emacs-pi-session
+                  :client-id "startup-test" :generation 1
+                  :root default-directory :executable "pi"))
+        (emacs-pi-startup-timeout 91)
+        captured)
+    (cl-letf (((symbol-function 'emacs-pi-rpc-start)
+               (lambda (&rest _arguments) 'connection))
+              ((symbol-function 'emacs-pi-rpc-request)
+               (lambda (_connection command _arguments _callback &optional timeout)
+                 (setq captured (list command timeout)))))
+      (emacs-pi-session--start session)
+      (should (equal captured '("get_state" 91))))))
+
 (ert-deftest emacs-pi-history-selects-entry-near-recent-byte-window ()
   (let ((file (make-temp-file "emacs-pi-history-window-")))
     (unwind-protect

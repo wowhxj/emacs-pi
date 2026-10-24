@@ -18,6 +18,11 @@
   last-prompt error history-truncated-notified
   commands executable arguments environment on-change on-extension)
 
+(defcustom emacs-pi-startup-timeout 90
+  "Seconds to wait for Pi's initial `get_state' response.
+Extension loading may delay the first RPC response."
+  :type 'number :group 'emacs-pi)
+
 (defun emacs-pi-session--changed (session kind &optional data)
   "Notify SESSION observer of KIND and DATA."
   (when (emacs-pi-session-on-change session)
@@ -190,7 +195,7 @@ Large session files are fetched from a recent byte-window using Pi's
                         (emacs-pi-session-error session)
                         (plist-get history-result :message)))
                 (emacs-pi-session--changed session 'status)))))))
-     30)))
+     emacs-pi-startup-timeout)))
 
 (cl-defun emacs-pi-session-create (root executable &optional arguments environment
                                        session-file on-change on-extension)

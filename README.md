@@ -74,6 +74,7 @@ Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session
 ## Configuration
 
 - `emacs-pi-executable` — Pi executable (default: `pi`)
+- `emacs-pi-startup-timeout` — seconds to wait for Pi's initial RPC response (default: 90)
 - `emacs-pi-extra-arguments` — additional Pi RPC process arguments
 - `emacs-pi-session-directory` — optional Pi session directory
 - `emacs-pi-show-thinking` — show thinking text in the conversation
