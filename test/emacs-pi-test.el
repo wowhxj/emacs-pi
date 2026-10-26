@@ -60,6 +60,58 @@
           (should (eq (emacs-pi-rpc-status connection) 'dead)))
       (when (buffer-live-p receive) (kill-buffer receive)))))
 
+(ert-deftest emacs-pi-rpc-ready-callback-can-select-read-only-chat ()
+  (let* ((receive (generate-new-buffer " *emacs-pi-test-receive*"))
+         (chat (generate-new-buffer " *emacs-pi-test-chat*"))
+         events
+         (connection (make-emacs-pi-rpc
+                      :receive-buffer receive
+                      :pending (make-hash-table :test #'equal)
+                      :status 'ready
+                      :on-event (lambda (_connection event)
+                                  (push (emacs-pi--jget event "type") events)))))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat
+            (insert "Protected transcript\n")
+            (add-text-properties (point-min) (point-max) '(read-only t)))
+          (puthash "ready" (make-emacs-pi-rpc-pending
+                            :command "get_state"
+                            :callback (lambda (_result)
+                                        (pop-to-buffer chat)
+                                        (goto-char (point-min))))
+                   (emacs-pi-rpc-pending connection))
+          (emacs-pi-rpc--filter
+           connection
+           (concat "{\"type\":\"response\",\"id\":\"ready\",\"command\":\"get_state\",\"success\":true}\n"
+                   "{\"type\":\"agent_end\"}\n"))
+          (should (eq (window-buffer (selected-window)) chat))
+          (should (equal events '("agent_end")))
+          (should (= (hash-table-count (emacs-pi-rpc-pending connection)) 0))
+          (with-current-buffer receive (should (= (buffer-size) 0)))
+          (with-current-buffer chat
+            (should (get-text-property (point-min) 'read-only))
+            (should (equal (buffer-string) "Protected transcript\n"))))
+      (kill-buffer receive)
+      (kill-buffer chat))))
+
+(ert-deftest emacs-pi-rpc-event-callback-cannot-skip-buffered-records ()
+  (let* ((receive (generate-new-buffer " *emacs-pi-test-receive*"))
+         events
+         (connection (make-emacs-pi-rpc
+                      :receive-buffer receive
+                      :pending (make-hash-table :test #'equal)
+                      :status 'ready
+                      :on-event (lambda (_connection event)
+                                  (push (emacs-pi--jget event "type") events)
+                                  (goto-char (point-max))))))
+    (unwind-protect
+        (progn
+          (emacs-pi-rpc--filter connection "{\"type\":\"one\"}\n{\"type\":\"two\"}\n")
+          (should (equal (reverse events) '("one" "two")))
+          (with-current-buffer receive (should (= (buffer-size) 0))))
+      (kill-buffer receive))))
+
 (ert-deftest emacs-pi-active-branch-skips-abandoned-entries ()
   (let ((entries (vconcat
                   (mapcar (lambda (spec)

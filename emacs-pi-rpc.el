@@ -21,9 +21,10 @@
 (defvar emacs-pi-rpc-max-backlog-bytes (* 128 1024 1024))
 
 (defun emacs-pi-rpc--deliver (callback &rest arguments)
-  "Call CALLBACK with ARGUMENTS without breaking the process filter."
+  "Call CALLBACK with ARGUMENTS, preserving the filter's buffer and point."
   (condition-case err
-      (apply callback arguments)
+      (save-excursion
+        (apply callback arguments))
     (error (message "emacs-pi RPC callback error: %s" (error-message-string err)))))
 
 (defun emacs-pi-rpc--settle (connection id result)
