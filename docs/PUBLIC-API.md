@@ -79,12 +79,28 @@ Missing or remote project directories are rejected. Existing same-file
 buffers in another root are rejected; dead sessions can restart in place.
 Starting sessions are waited for rather than duplicated.
 
-Limitations: the current API verifies file/ID but the Pi state response
-has not been proven to expose authoritative execution cwd. Real Pi
-recovery and cross-directory behavior remain unverified; do not interpret
-`default-directory` alone as evidence of agent execution cwd. Cancellation
-of open requests and generation-race hardening are not yet implemented.
-This development API is not final acceptance of the full ashub plan.
+Limitations: `emacs-pi-open-session` verifies file/ID but the Pi state
+response does not report authoritative execution cwd. The fork API below
+also verifies the new header metadata, not runtime cwd. Do not interpret
+`default-directory` or a header alone as runtime evidence. Cancellation of
+open requests and generation-race hardening are not yet implemented.
+
+## Fork a session file into a new project directory
+
+```elisp
+(emacs-pi-fork-session-file
+ "/absolute/session.jsonl" :directory "/absolute/new-project"
+ :session-directory "/absolute/session-root" :display 'none
+ :on-ready (lambda (buffer) (pop-to-buffer buffer))
+ :on-error (lambda (error) (message "%s" error)))
+```
+
+Starts Pi with `--fork` and verifies the live RPC state has a distinct
+session ID, a separate session file, the requested cwd in the new header,
+and `parentSession` pointing to the original file. The source is never
+modified or deleted. The consumer must compare all non-header records and
+choose when (or whether) to remove the source. This verifies readiness and
+fork metadata, not runtime execution cwd or behavioral equivalence.
 
 ## External @ references
 

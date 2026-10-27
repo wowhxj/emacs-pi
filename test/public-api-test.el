@@ -242,6 +242,66 @@
       (delete-file path)
       (delete-directory dir))))
 
+(ert-deftest emacs-pi-api-fork-session-with-fake-peer ()
+  (let* ((dir (make-temp-file "pi-fork-api-" t))
+         (target (expand-file-name "new-project" dir))
+         (session-directory (expand-file-name "sessions" dir))
+         (path (expand-file-name "source.jsonl" dir))
+         (emacs-pi-executable (executable-find "python3"))
+         (emacs-pi-extra-arguments nil)
+         (emacs-pi--chats (make-hash-table :test #'equal))
+         buffer ready failure)
+    (unwind-protect
+        (progn
+          (make-directory target)
+          (make-directory session-directory)
+          (with-temp-file path
+            (insert (format "{\"type\":\"session\",\"id\":\"source-id\",\"cwd\":%s}\n"
+                            (json-serialize dir)))
+            (insert "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"keep history\"}}\n"))
+          (cl-letf (((symbol-function 'emacs-pi-rpc-start)
+                     (let ((original (symbol-function 'emacs-pi-rpc-start)))
+                       (lambda (id generation root args event exit &optional env)
+                         (funcall original id generation root
+                                  (append (list (executable-find "python3")
+                                                (expand-file-name
+                                                 "test/fake-pi.py"
+                                                 (file-name-directory (locate-library "emacs-pi"))))
+                                          (cdr args))
+                                  event exit env)))))
+            (setq buffer
+                  (emacs-pi-fork-session-file
+                   path :directory target :session-directory session-directory :display 'none
+                   :on-ready (lambda (b) (setq ready b))
+                   :on-error (lambda (err) (setq failure err))))
+            (let ((deadline (+ (float-time) 5)))
+              (while (and (not ready) (not failure) (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (should-not failure)
+            (should (eq ready buffer))
+            (with-current-buffer buffer
+              (let* ((session emacs-pi--session)
+                     (fork-file (emacs-pi-session-session-file session))
+                     (header (with-temp-buffer
+                               (insert-file-contents fork-file)
+                               (json-parse-string (buffer-substring-no-properties
+                                                   (point-min) (line-end-position))
+                                                  :object-type 'hash-table)))
+                     (process (emacs-pi-rpc-process
+                               (emacs-pi-session-connection session))))
+                (should-not (equal (emacs-pi-session-session-id session) "source-id"))
+                (should (equal (gethash "cwd" header) (directory-file-name (file-truename target))))
+                (should (equal (gethash "parentSession" header) (file-truename path)))
+                (should (file-exists-p path))
+                (should (file-exists-p fork-file))
+                (emacs-pi-session-shutdown session)
+                (while (process-live-p process)
+                  (accept-process-output process 0.02)))))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (emacs-pi-session-shutdown emacs-pi--session))
+        (kill-buffer buffer))
+      (delete-directory dir t)))))
+
 (ert-deftest emacs-pi-api-reference-provider-replaces-at-name ()
   (let* ((root (file-name-as-directory (make-temp-file "emacs-pi-provider-" t)))
          (session (make-emacs-pi-session :root root :client-id "provider-123456"

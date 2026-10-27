@@ -134,8 +134,9 @@ passed to `display-buffer' as an action."
              (emacs-pi-input-set (or (emacs-pi--jget request "text") "")))))
         (_ nil)))))
 
-(defun emacs-pi--open (root &optional session-file display)
-  "Open a new chat at ROOT, optionally restoring SESSION-FILE."
+(defun emacs-pi--open (root &optional session-file display startup-arguments)
+  "Open a new chat at ROOT, optionally restoring SESSION-FILE.
+STARTUP-ARGUMENTS are appended to the Pi command line."
   (emacs-pi--check-arguments)
   (unless (or (file-executable-p emacs-pi-executable)
               (executable-find emacs-pi-executable))
@@ -144,7 +145,8 @@ passed to `display-buffer' as an action."
          (args (append (when emacs-pi-session-directory
                          (list "--session-dir"
                                (expand-file-name emacs-pi-session-directory)))
-                       emacs-pi-extra-arguments))
+                       emacs-pi-extra-arguments
+                       startup-arguments))
          (session
           (emacs-pi-session-create root emacs-pi-executable args
                                    nil session-file
@@ -258,6 +260,123 @@ receives a diagnostic string.  A terminal callback runs at most once."
                                       (file-equal-p path file))
                            "Pi restored a different or unverifiable session")))))))))))
         (setq timer (run-at-time 0.01 0.05 #'check)))
+      buffer)))
+
+;;;###autoload
+(cl-defun emacs-pi-fork-session-file
+    (session-file &key directory session-directory (display 'current)
+                  on-ready on-error)
+  "Fork SESSION-FILE into DIRECTORY and verify the new RPC session.
+The source file is never modified or deleted.  SESSION-DIRECTORY is a
+per-call storage override.  ON-READY receives the chat buffer after Pi
+reports a distinct session ID, a new file, and matching fork metadata.
+ON-ERROR receives a diagnostic string.  The function returns the buffer
+immediately."
+  (unless (and (stringp session-file) (not (file-remote-p session-file))
+               (file-regular-p session-file))
+    (user-error "An existing local Pi session file is required"))
+  (let* ((path (file-truename session-file))
+         (header (with-temp-buffer
+                   (insert-file-contents path nil 0 65536)
+                   (goto-char (point-min))
+                   (json-parse-string (buffer-substring-no-properties
+                                       (point-min) (line-end-position))
+                                      :object-type 'hash-table)))
+         (id (gethash "id" header))
+         (root (or directory (gethash "cwd" header)))
+         existing)
+    (unless (and (equal (gethash "type" header) "session")
+                 (stringp id) (stringp root) (not (file-remote-p root))
+                 (file-directory-p root))
+      (user-error "Invalid Pi session header or fork directory"))
+    (setq root (emacs-pi--local-root root))
+    (when (and (stringp (gethash "cwd" header))
+               (equal (file-name-as-directory (directory-file-name root))
+                      (file-name-as-directory
+                       (directory-file-name
+                        (emacs-pi--local-root (gethash "cwd" header))))))
+      (user-error "Pi session already belongs to the requested directory"))
+    (maphash
+     (lambda (_key buffer)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (let ((file (and emacs-pi--session
+                            (emacs-pi-session-session-file emacs-pi--session))))
+             (when (and (stringp file) (file-exists-p file)
+                        (file-equal-p file path))
+               (setq existing buffer))))))
+     emacs-pi--chats)
+    (when existing
+      (user-error "Pi source session is already open; close it before forking"))
+    (let* ((emacs-pi-session-directory
+            (or session-directory emacs-pi-session-directory))
+           (buffer (emacs-pi--open root nil 'none (list "--fork" path)))
+           (session (buffer-local-value 'emacs-pi--session buffer))
+           (deadline (+ (float-time) (max 35 (+ emacs-pi-startup-timeout 10))))
+           (done nil) timer)
+      (cl-labels
+          ((finish (failure)
+             (unless done
+               (setq done t)
+               (when timer (cancel-timer timer))
+               (if failure
+                   (progn
+                     (when (and (buffer-live-p buffer)
+                                (buffer-local-value 'emacs-pi--session buffer))
+                       (with-current-buffer buffer
+                         (emacs-pi-session-shutdown emacs-pi--session)))
+                     (when on-error (funcall on-error failure)))
+                 (when on-ready (funcall on-ready buffer)))))
+           (check ()
+             (cond
+              ((not (buffer-live-p buffer)) (finish "Pi fork buffer was killed"))
+              ((> (float-time) deadline) (finish "Pi session fork timed out"))
+              ((eq (emacs-pi-session-phase session) 'dead)
+               (finish (or (emacs-pi-session-error session) "Pi fork process exited")))
+              ((eq (emacs-pi-session-phase session) 'ready)
+               (let ((connection (emacs-pi-session-connection session)))
+                 (if (not (and connection
+                               (eq (emacs-pi-rpc-status connection) 'ready)
+                               (process-live-p (emacs-pi-rpc-process connection))))
+                     (finish "Pi fork connection is not live")
+                   (cancel-timer timer)
+                   (setq timer (run-at-time
+                                30 nil #'finish "Pi fork state check timed out"))
+                   (emacs-pi-rpc-request
+                    connection "get_state" nil
+                    (lambda (result)
+                      (let* ((state (plist-get result :data))
+                             (fork-id (emacs-pi--jget state "sessionId"))
+                             (fork-file (emacs-pi--jget state "sessionFile"))
+                             (fork-header
+                              (when (and (stringp fork-file) (file-regular-p fork-file))
+                                (condition-case nil
+                                    (with-temp-buffer
+                                      (insert-file-contents fork-file nil 0 65536)
+                                      (goto-char (point-min))
+                                      (json-parse-string
+                                       (buffer-substring-no-properties
+                                        (point-min) (line-end-position))
+                                       :object-type 'hash-table))
+                                  (error nil)))))
+                        (finish
+                         (unless (and (eq (emacs-pi-session-phase session) 'ready)
+                                      (plist-get result :ok)
+                                      (stringp fork-id) (not (equal fork-id id))
+                                      (stringp fork-file) (file-regular-p fork-file)
+                                      (not (file-equal-p path fork-file))
+                                      (hash-table-p fork-header)
+                                      (equal (gethash "id" fork-header) fork-id)
+                                      (stringp (gethash "cwd" fork-header))
+                                      (equal (file-name-as-directory
+                                              (directory-file-name
+                                               (gethash "cwd" fork-header)))
+                                             (file-name-as-directory
+                                              (directory-file-name root)))
+                                      (equal (gethash "parentSession" fork-header) path))
+                           "Pi did not create a verifiable fork")))))))))))
+        (setq timer (run-at-time 0.01 0.05 #'check)))
+      (emacs-pi--show-chat buffer display)
       buffer)))
 
 ;;;###autoload

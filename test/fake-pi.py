@@ -2,7 +2,9 @@
 """Tiny deterministic Pi RPC peer used by Emacs integration tests."""
 
 import json
+import os
 import sys
+from datetime import datetime, timezone
 
 
 def send(record):
@@ -20,6 +22,25 @@ if "--session" in sys.argv:
     session_file = sys.argv[sys.argv.index("--session") + 1]
     with open(session_file, encoding="utf-8") as history:
         session_id = json.loads(history.readline())["id"]
+elif "--fork" in sys.argv:
+    source_file = sys.argv[sys.argv.index("--fork") + 1]
+    with open(source_file, encoding="utf-8") as source:
+        source_entries = [json.loads(line) for line in source if line.strip()]
+    source_header = source_entries[0]
+    session_id = "fake-fork-" + source_header["id"]
+    session_directory = (sys.argv[sys.argv.index("--session-dir") + 1]
+                         if "--session-dir" in sys.argv else os.getcwd())
+    os.makedirs(session_directory, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat().replace(":", "-").replace(".", "-")
+    session_file = os.path.join(session_directory, f"{timestamp}_{session_id}.jsonl")
+    header = {"type": "session", "version": source_header.get("version", 1),
+              "id": session_id, "timestamp": datetime.now(timezone.utc).isoformat(),
+              "cwd": os.getcwd(), "parentSession": os.path.realpath(source_file)}
+    with open(session_file, "w", encoding="utf-8") as fork:
+        fork.write(json.dumps(header) + "\n")
+        for entry in source_entries:
+            if entry.get("type") != "session":
+                fork.write(json.dumps(entry) + "\n")
 
 for raw in sys.stdin:
     command = json.loads(raw)
