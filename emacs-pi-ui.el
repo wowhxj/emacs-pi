@@ -85,6 +85,7 @@
 (defvar emacs-pi-copy-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-j") #'emacs-pi-semi-char-mode)
+    (define-key map (kbd "i") #'emacs-pi-semi-char-mode)
     (define-key map (kbd "C-a") #'move-beginning-of-line)
     (define-key map (kbd "M-p") #'backward-paragraph)
     (define-key map (kbd "M-n") #'forward-paragraph)
