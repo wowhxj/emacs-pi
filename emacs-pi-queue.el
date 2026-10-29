@@ -37,11 +37,9 @@
     (define-key map (kbd "M-<down>") #'emacs-pi-queue-move-down)
     (define-key map (kbd "n") #'emacs-pi-queue-next-item)
     (define-key map (kbd "p") #'emacs-pi-queue-previous-item)
-    (define-key map (kbd "s") #'emacs-pi-queue-move-to-steering)
-    (define-key map (kbd "f") #'emacs-pi-queue-move-to-follow-up)
     (define-key map (kbd "d") #'emacs-pi-queue-delete)
     (define-key map (kbd "g") #'emacs-pi-queue-refresh)
-    (define-key map (kbd "C-c C-c") #'emacs-pi-queue-apply)
+    (define-key map (kbd "x") #'emacs-pi-queue-apply)
     (define-key map (kbd "q") #'emacs-pi-queue-quit)
     map)
   "Keys for the Pi queue list.")
@@ -166,8 +164,8 @@
             (cond (emacs-pi-queue--busy " · applying…\n")
                   (emacs-pi-queue--dirty " · modified locally\n")
                   (t "\n"))
-            "n/p select · RET edit · M-↑/↓ reorder across lanes · s/f change lane · d remove\n"
-            "C-c C-c apply · g discard local edits/refresh · q discard and close\n\n")
+            "n/p select · RET edit · M-↑/↓ reorder across lanes · d remove\n"
+            "x apply · g discard local edits/refresh · q discard and close\n\n")
     (when emacs-pi-queue--notice
       (insert (propertize (concat emacs-pi-queue--notice "\n\n")
                           'face 'warning)))
@@ -289,22 +287,31 @@
   (emacs-pi-queue--move-cursor -1))
 
 (defun emacs-pi-queue--move (offset)
-  "Move the selected item by OFFSET across the combined queue."
+  "Move the selected item by OFFSET, transferring only it across lanes."
   (emacs-pi-queue--ensure-editable)
   (let* ((item (emacs-pi-queue--item-at-point))
-         (items (emacs-pi-queue--all-items))
-         (index (cl-position item items))
+         (lane (emacs-pi-queue-item-lane item))
+         (lane-items (if (eq lane 'steering)
+                         emacs-pi-queue--steering emacs-pi-queue--follow-up))
+         (index (cl-position item lane-items))
          (target (+ index offset))
-         (steering-count (length emacs-pi-queue--steering)))
-    (when (or (< target 0) (>= target (length items)))
-      (user-error "Already at the end of the queue"))
-    (cl-rotatef (nth index items) (nth target items))
-    (setq emacs-pi-queue--steering (cl-subseq items 0 steering-count)
-          emacs-pi-queue--follow-up (cl-subseq items steering-count))
-    (cl-loop for queue-item in items
-             for item-index from 0
-             do (setf (emacs-pi-queue-item-lane queue-item)
-                      (if (< item-index steering-count) 'steering 'follow-up)))
+         (at-boundary (if (eq lane 'steering)
+                          (= target (length lane-items))
+                        (< target 0))))
+    (cond
+     ((and (>= target 0) (< target (length lane-items)))
+      (cl-rotatef (nth index lane-items) (nth target lane-items)))
+     ((and at-boundary (= offset 1) (eq lane 'steering)
+           emacs-pi-queue--follow-up)
+      (setq emacs-pi-queue--steering (delq item emacs-pi-queue--steering)
+            emacs-pi-queue--follow-up (cons item emacs-pi-queue--follow-up))
+      (setf (emacs-pi-queue-item-lane item) 'follow-up))
+     ((and at-boundary (= offset -1) (eq lane 'follow-up)
+           emacs-pi-queue--steering)
+      (setq emacs-pi-queue--follow-up (delq item emacs-pi-queue--follow-up)
+            emacs-pi-queue--steering (append emacs-pi-queue--steering (list item)))
+      (setf (emacs-pi-queue-item-lane item) 'steering))
+     (t (user-error "Already at the end of this queue lane")))
     (setq emacs-pi-queue--dirty t)
     (emacs-pi--queue-render emacs-pi--queue-session)))
 
@@ -317,34 +324,6 @@
   "Move the selected queued message later."
   (interactive)
   (emacs-pi-queue--move 1))
-
-(defun emacs-pi-queue--move-to (lane)
-  "Move the selected queued message to LANE's end."
-  (emacs-pi-queue--ensure-editable)
-  (let ((item (emacs-pi-queue--item-at-point)))
-    (unless (eq (emacs-pi-queue-item-lane item) lane)
-      (setq emacs-pi-queue--steering
-            (delq item emacs-pi-queue--steering)
-            emacs-pi-queue--follow-up
-            (delq item emacs-pi-queue--follow-up))
-      (setf (emacs-pi-queue-item-lane item) lane)
-      (if (eq lane 'steering)
-          (setq emacs-pi-queue--steering
-                (append emacs-pi-queue--steering (list item)))
-        (setq emacs-pi-queue--follow-up
-              (append emacs-pi-queue--follow-up (list item))))
-      (setq emacs-pi-queue--dirty t)
-      (emacs-pi--queue-render emacs-pi--queue-session))))
-
-(defun emacs-pi-queue-move-to-steering ()
-  "Promote the selected queued message to steering."
-  (interactive)
-  (emacs-pi-queue--move-to 'steering))
-
-(defun emacs-pi-queue-move-to-follow-up ()
-  "Move the selected queued message to follow-up."
-  (interactive)
-  (emacs-pi-queue--move-to 'follow-up))
 
 (defun emacs-pi-queue-delete ()
   "Stage removal of the selected queued message."

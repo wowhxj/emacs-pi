@@ -61,7 +61,7 @@
 | 发送消息 / 插入换行 | `RET` / `S-RET` |
 | steer 正在运行的对话 | `C-c C-s` |
 | 停止并清空排队消息 / 仅中止当前运行 | `C-c C-k` / `M-x emacs-pi-abort-current` |
-| 查看和编辑消息队列 | `C-c C-l` |
+| 查看和编辑消息队列 | `C-c C-l` / `C-c C-u` |
 | 恢复会话 / 切换聊天 | `C-c C-r` / `C-c C-b` |
 | 添加图片 / 打开图片 | `M-x emacs-pi-attach-image` / `C-c C-o` |
 | 粘贴剪贴板内容 | `C-c C-p`（macOS 也可用 `s-v`） |

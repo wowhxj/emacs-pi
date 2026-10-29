@@ -62,7 +62,7 @@ Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session
 | Send prompt / insert newline | `RET` / `S-RET` |
 | Steer a running conversation | `C-c C-s` |
 | Stop and clear queued prompts / abort the current run | `C-c C-k` / `M-x emacs-pi-abort-current` |
-| Show and edit the prompt queue | `C-c C-l` |
+| Show and edit the prompt queue | `C-c C-l` / `C-c C-u` |
 | Resume a session / switch chat | `C-c C-r` / `C-c C-b` |
 | Attach an image / open an image | `M-x emacs-pi-attach-image` / `C-c C-o` |
 | Paste from the clipboard | `C-c C-p` (also `s-v` on macOS) |

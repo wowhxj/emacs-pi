@@ -634,7 +634,7 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
       (princ "/reload restarts the RPC process to reload extensions and resources.\n")
       (princ "RET send · S-RET newline · C-c C-s steer · C-c C-k stop\n")
       (princ "C-c C-l/C-u queue · C-c C-r resume · C-c C-b switch chats · C-c C-q close\n")
-      (princ "Queue: n/p select · RET edit · M-up/down reorder across lanes · s/f lane · d delete · C-c C-c apply\n")
+      (princ "Queue: n/p select · RET edit · M-up/down reorder across lanes · d delete · x apply\n")
       (princ "C-c C-t copy mode · C-c C-j return to input · C-a stay after You>\n")
       (princ "RET/TAB on a Process or tool heading toggles its steps\n")
       (princ "M-p/M-n prompt history · TAB/M-TAB minibuffer completion\n")
