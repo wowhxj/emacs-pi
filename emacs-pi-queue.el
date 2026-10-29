@@ -287,7 +287,7 @@
   (emacs-pi-queue--move-cursor -1))
 
 (defun emacs-pi-queue--move (offset)
-  "Move the selected item by OFFSET, transferring only it across lanes."
+  "Move the selected item by OFFSET; moving a follow-up up promotes it to steering."
   (emacs-pi-queue--ensure-editable)
   (let* ((item (emacs-pi-queue--item-at-point))
          (lane (emacs-pi-queue-item-lane item))
@@ -299,6 +299,11 @@
                           (= target (length lane-items))
                         (< target 0))))
     (cond
+     ((and (= offset -1) (eq lane 'follow-up)
+           emacs-pi-queue--steering)
+      (setq emacs-pi-queue--follow-up (delq item emacs-pi-queue--follow-up)
+            emacs-pi-queue--steering (append emacs-pi-queue--steering (list item)))
+      (setf (emacs-pi-queue-item-lane item) 'steering))
      ((and (>= target 0) (< target (length lane-items)))
       (cl-rotatef (nth index lane-items) (nth target lane-items)))
      ((and at-boundary (= offset 1) (eq lane 'steering)
@@ -306,17 +311,12 @@
       (setq emacs-pi-queue--steering (delq item emacs-pi-queue--steering)
             emacs-pi-queue--follow-up (cons item emacs-pi-queue--follow-up))
       (setf (emacs-pi-queue-item-lane item) 'follow-up))
-     ((and at-boundary (= offset -1) (eq lane 'follow-up)
-           emacs-pi-queue--steering)
-      (setq emacs-pi-queue--follow-up (delq item emacs-pi-queue--follow-up)
-            emacs-pi-queue--steering (append emacs-pi-queue--steering (list item)))
-      (setf (emacs-pi-queue-item-lane item) 'steering))
      (t (user-error "Already at the end of this queue lane")))
     (setq emacs-pi-queue--dirty t)
     (emacs-pi--queue-render emacs-pi--queue-session)))
 
 (defun emacs-pi-queue-move-up ()
-  "Move the selected queued message earlier."
+  "Promote a selected follow-up to steering, or move steering earlier."
   (interactive)
   (emacs-pi-queue--move -1))
 

@@ -1202,6 +1202,31 @@
       (when (get-buffer queue-name) (kill-buffer queue-name))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-queue-move-up-promotes-selected-follow-up ()
+  (let* ((root (make-temp-file "emacs-pi-queue-promote-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "promote-123456" :phase 'ready
+                   :steering ["steer"] :follow-up ["first" "selected"]
+                   :queue-known t))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:promot*")
+         (item))
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (search-forward "2. selected")
+            (setq item (emacs-pi-queue--item-at-point))
+            (emacs-pi-queue-move-up)
+            (should (eq (emacs-pi-queue-item-lane item) 'steering))
+            (should (equal (let ((snapshot (emacs-pi-queue--desired-snapshot)))
+                             (list (car snapshot) (cdr snapshot)))
+                           '(("steer" "selected") ("first"))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-queue-reorders-and-replays-images ()
   (let* ((root (make-temp-file "emacs-pi-queue-edit-" t))
          (attachments (make-hash-table :test #'equal))
