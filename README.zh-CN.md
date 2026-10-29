@@ -76,6 +76,7 @@
 - `emacs-pi-startup-timeout`：等待 Pi 首次 RPC 回复的秒数，默认 90
 - `emacs-pi-extra-arguments`：传给 Pi RPC 进程的额外参数
 - `emacs-pi-session-directory`：可选的 Pi 会话目录
+- `emacs-pi-history-cache-directory`：异步会话枚举的持久摘要索引目录，默认 Emacs 配置目录下的 `emacs-pi/history-cache/`；设为 nil 禁用。索引含路径、首末消息预览及文件签名（权限 `0600`），可删除后重建。重启后只重新解析变动文件；Hub 可先显示缓存再后台核验
 - `emacs-pi-show-thinking`：是否在对话中显示 thinking 文本
 
 macOS 剪贴板图片粘贴需要安装 `pngpaste`。队列编辑行为及协议限制见[队列说明](docs/QUEUE.md)。

@@ -30,13 +30,36 @@ size; malformed or partial records produce diagnostics. This is not a
 transactional filesystem snapshot. Internal/subagent and archive status
 remain unknown until reliable producer metadata is supported.
 
-Unchanged files reuse an in-memory cache shared with the synchronous
-history picker. Cache signatures include size, modification/change times,
-inode and device; changed or replaced files are reparsed, and cached
-records retain their diagnostics. Files changed during a read are not
-cached. Only the recognized observation-ledger schema at
+Unchanged files reuse a memory cache shared with the synchronous history
+picker. The asynchronous API also loads and atomically saves per-storage-root
+JSON indexes, so signatures survive Emacs restarts. Signatures include the
+parser schema, size, modification/change times, inode and device; changed or
+replaced files are reparsed, and cached records retain their diagnostics.
+Deleted files are removed from the completed index. Files changed during a
+read are not cached. Cancellation does not publish an incomplete index.
+Broken, incompatible or unwritable indexes do not fail enumeration.
+Only the recognized observation-ledger schema at
 `observation-pack/ledger.jsonl` is excluded; real sessions at that path
 and damaged session files are not silently ignored.
+
+For an immediate **unverified** initial display, call:
+
+```elisp
+(emacs-pi-cached-sessions '("/absolute/session/root"))
+;; => (:items RECORDS :diagnostics DIAGNOSTICS :cached t)
+```
+
+This only reads summaries; it neither scans session files nor starts Pi.
+Deleted or changed files may still appear until `emacs-pi-list-sessions`
+finishes verification. Always use that asynchronous API afterwards, and
+visibly distinguish cached rows from verified results. Older clients may
+not provide the new function; consumers should check `fboundp`.
+
+`emacs-pi-history-cache-directory` defaults to `emacs-pi/history-cache/`
+under `user-emacs-directory`; nil disables disk persistence. Index files
+have mode `0600` and contain paths and first/latest prompt previews, not
+full transcripts. They are parsed as JSON data, never loaded as code.
+Deleting them forces a rebuild. Indexes larger than 32 MiB are ignored.
 
 Legacy `emacs-pi-history-list` remains synchronous and uses the same
 parser/cache. It now reads complete previews and sorts by message time;

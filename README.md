@@ -77,6 +77,7 @@ Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session
 - `emacs-pi-startup-timeout` — seconds to wait for Pi's initial RPC response (default: 90)
 - `emacs-pi-extra-arguments` — additional Pi RPC process arguments
 - `emacs-pi-session-directory` — optional Pi session directory
+- `emacs-pi-history-cache-directory` — persistent summary indexes for asynchronous enumeration (default: `emacs-pi/history-cache/` under the Emacs configuration directory; nil disables disk caching). Private `0600` indexes contain paths, first/latest prompt previews and file signatures, and can be deleted to rebuild. Restarts only reparse changed files; the Hub can display cached rows before background verification
 - `emacs-pi-show-thinking` — show thinking text in the conversation
 
 Image clipboard paste on macOS requires `pngpaste`. For queue editing behavior and its protocol constraints, see [docs/QUEUE.md](docs/QUEUE.md).

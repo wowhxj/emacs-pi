@@ -7,6 +7,7 @@
 
 (require 'cl-lib)
 (require 'seq)
+(require 'json)
 (require 'emacs-pi-core)
 
 (defcustom emacs-pi-session-directory nil
@@ -22,8 +23,141 @@ When nil, use Pi's environment or default agent directory."
   "Seconds to wait for Pi to return session history over RPC."
   :type 'number :group 'emacs-pi)
 
+(defcustom emacs-pi-history-cache-directory
+  (locate-user-emacs-file "emacs-pi/history-cache/")
+  "Directory for disposable session summary indexes, or nil to disable.
+Indexes contain first/last prompt previews, paths and file signatures,
+not full transcripts.  They are read as JSON data, never executed."
+  :type '(choice (const :tag "Memory only" nil) directory) :group 'emacs-pi)
+
 (defvar emacs-pi-history--cache (make-hash-table :test #'equal)
   "Session records keyed by canonical path and filesystem identity/metadata.")
+
+(defvar emacs-pi-history--loaded-indexes (make-hash-table :test #'equal)
+  "Index filenames already read in this Emacs process.")
+
+(defun emacs-pi-history--index-file (directory)
+  "Return the disposable index filename for canonical DIRECTORY."
+  (when (and emacs-pi-history-cache-directory (not (file-remote-p directory)))
+    (expand-file-name (concat (secure-hash 'sha256 directory) ".json")
+                      emacs-pi-history-cache-directory)))
+
+(defun emacs-pi-history--index-record-p (record)
+  "Whether decoded RECORD is a usable session summary or ledger marker."
+  (or (and (eq (plist-get record :auxiliary) t) (null (plist-get record :id)))
+      (and (natnump (plist-get record :message-count))
+           (seq-every-p (lambda (field)
+                          (let ((value (plist-get record field)))
+                            (or (null value) (stringp value))))
+                        '(:cwd :created :preview :last-preview :name))
+           (seq-every-p (lambda (field) (memq (plist-get record field) '(nil t unknown)))
+                        '(:empty :internal :archived))
+           (memq (plist-get record :time-source) '(nil message))
+           (seq-every-p (lambda (field)
+                          (let ((value (plist-get record field)))
+                            (or (null value) (ignore-errors (time-convert value 'list)))))
+                        '(:modified :last-user-time)))))
+
+(defun emacs-pi-history--load-index (directory)
+  "Seed the memory cache from DIRECTORY's index, ignoring unusable data."
+  (let ((file (emacs-pi-history--index-file directory)))
+    (when (and file (not (gethash file emacs-pi-history--loaded-indexes)))
+      (puthash file t emacs-pi-history--loaded-indexes)
+      (condition-case nil
+          (when (and (file-readable-p file)
+                     (< (file-attribute-size (file-attributes file)) (* 32 1024 1024)))
+            (let ((data (with-temp-buffer
+                          (insert-file-contents file)
+                          (json-parse-buffer :object-type 'plist :array-type 'list
+                                             :null-object nil :false-object nil))))
+              (when (and (equal (plist-get data :version) 1)
+                         (equal (plist-get data :root) directory))
+                (dolist (entry (plist-get data :entries))
+                  (let* ((path (plist-get entry :path))
+                         (record (plist-get entry :record))
+                         (signature (plist-get entry :signature)))
+                    (when (and (stringp path)
+                               (string-prefix-p (file-name-as-directory directory) path)
+                               (equal path (expand-file-name path))
+                               (listp signature) (= (length signature) 6)
+                               (equal (car signature) "last-user-time")
+                               (listp record)
+                               (or (eq (plist-get record :auxiliary) t)
+                                   (and (equal path (plist-get record :path))
+                                        (stringp (plist-get record :id))
+                                        (natnump (plist-get record :invalid-lines)))))
+                      (dolist (field '(:modified :last-user-time))
+                        (let ((time (plist-get record field)))
+                          (when (and (listp time) (plist-member time :ticks))
+                            (setf (plist-get record field)
+                                  (cons (plist-get time :ticks) (plist-get time :hz))))))
+                      (dolist (field '(:empty :internal :archived))
+                        (when (equal (plist-get record field) "unknown")
+                          (setf (plist-get record field) 'unknown)))
+                      (when (equal (plist-get record :time-source) "message")
+                        (setf (plist-get record :time-source) 'message))
+                      (when (and (emacs-pi-history--index-record-p record)
+                                 (not (gethash path emacs-pi-history--cache)))
+                        (puthash path (cons signature record) emacs-pi-history--cache))))))))
+        (error nil)))))
+
+(defun emacs-pi-history--save-index (directory seen)
+  "Atomically save DIRECTORY's completed scan, retaining only SEEN files.
+Cache failures never turn successful session enumeration into a failure."
+  (let ((file (emacs-pi-history--index-file directory)) entries temporary)
+    (when file
+      (condition-case nil
+          (progn
+            (maphash
+             (lambda (path cached)
+               (when (string-prefix-p (file-name-as-directory directory) path)
+                 (if (gethash path seen)
+                     (let ((record (copy-sequence (cdr cached))))
+                       (dolist (field '(:modified :last-user-time))
+                         (let ((time (plist-get record field)))
+                           ;; Emacs times can be dotted (TICKS . HZ), not JSON arrays.
+                           (when (and (consp time) (numberp (cdr time)))
+                             (setf (plist-get record field)
+                                   (list :ticks (car time) :hz (cdr time))))))
+                       (push (list :path path :signature (car cached) :record record) entries))
+                   (remhash path emacs-pi-history--cache))))
+             emacs-pi-history--cache)
+            (make-directory (file-name-directory file) t)
+            (setq temporary (make-temp-file (concat file ".")))
+            (unwind-protect
+                (progn
+                  (let ((coding-system-for-write 'utf-8-unix))
+                    (with-temp-file temporary
+                      (insert (json-encode
+                               (list :version 1 :root directory :entries (vconcat entries))))))
+                  (set-file-modes temporary #o600)
+                  (rename-file temporary file t))
+              (when (file-exists-p temporary) (delete-file temporary))))
+        (error nil)))))
+
+;;;###autoload
+(defun emacs-pi-cached-sessions (&optional directories)
+  "Return last known summaries for DIRECTORIES without scanning sessions.
+The result has :items and :diagnostics, like `emacs-pi-list-sessions',
+and :cached t.  It may include changed or deleted files: use it only for
+an initial display, then call the asynchronous API to verify the index."
+  (let (items diagnostics)
+    (dolist (directory (or directories (list (emacs-pi-history-directory))))
+      (setq directory (directory-file-name (file-truename directory)))
+      (emacs-pi-history--load-index directory)
+      (maphash
+       (lambda (path cached)
+         (let ((record (copy-sequence (cdr cached))))
+           (when (and (string-prefix-p (file-name-as-directory directory) path)
+                      (stringp (plist-get record :id)))
+             (setf (plist-get record :source) directory)
+             (push record items)
+             (when (> (plist-get record :invalid-lines) 0)
+               (push (list :path path :invalid-lines (plist-get record :invalid-lines)
+                           :message (format "Invalid session records: %d"
+                                            (plist-get record :invalid-lines))) diagnostics)))))
+       emacs-pi-history--cache))
+    (list :items (nreverse items) :diagnostics (nreverse diagnostics) :cached t)))
 
 (defun emacs-pi-history-directory ()
   "Return the directory to scan for Pi session JSONL files."
@@ -166,9 +300,9 @@ JSON serialization overhead."
   "Return parser schema, content metadata and identity from ATTRIBUTES."
   (when attributes
     ;; Rebuild old cached previews after a live reload adds user timestamps.
-    (list 'last-user-time (file-attribute-size attributes)
-          (file-attribute-modification-time attributes)
-          (file-attribute-status-change-time attributes)
+    (list "last-user-time" (file-attribute-size attributes)
+          (time-convert (file-attribute-modification-time attributes) 'list)
+          (time-convert (file-attribute-status-change-time attributes) 'list)
           (file-attribute-inode-number attributes)
           (file-attribute-device-number attributes))))
 
@@ -222,16 +356,19 @@ This is a read-only local index; it never edits Pi's session files."
 ;;;###autoload
 (cl-defun emacs-pi-list-sessions (on-success &key directories on-error)
   "Read sessions cooperatively without starting Pi; return a cancel function.
-Unchanged files reuse an in-memory cache; observation ledgers are excluded.
+Unchanged files reuse a persistent summary index; observation ledgers
+are excluded.  Every scan verifies file signatures and updates the index.
 ON-SUCCESS receives a plist with :items and :diagnostics.  Each item has
 :source (canonical storage directory), :path, :id, :cwd, :preview,
 :modified and :time-source.  Unknown flags use the symbol `unknown'.
 ON-ERROR receives a diagnostic string on fatal failure.  Cancellation
 silently suppresses callbacks.  Partial failures appear in :diagnostics."
-  (let ((pending (mapcar (lambda (dir) (cons (expand-file-name dir) nil))
-                         (or directories (list (emacs-pi-history-directory)))))
-        (seen (make-hash-table :test #'equal))
-        items diagnostics timer cancelled input record source offset size signature)
+  (let* ((roots (mapcar (lambda (dir) (directory-file-name (file-truename dir)))
+                        (or directories (list (emacs-pi-history-directory)))))
+         (pending (mapcar (lambda (dir) (cons dir nil)) roots))
+         (seen (make-hash-table :test #'equal))
+         items diagnostics timer cancelled incomplete input record source offset size signature)
+    (dolist (root roots) (emacs-pi-history--load-index root))
     (cl-labels
         ((record-diagnostics (value)
            (when (> (plist-get value :invalid-lines) 0)
@@ -317,19 +454,24 @@ silently suppresses callbacks.  Partial failures appear in :diagnostics."
                                      (when (equal key (emacs-pi-history--signature (file-attributes canonical)))
                                        (puthash canonical (cons key '(:auxiliary t)) emacs-pi-history--cache)))
                                     (t
+                                     (remhash canonical emacs-pi-history--cache)
                                      (setq record (emacs-pi-history--empty-record canonical)
                                            signature key offset 0
                                            size (file-attribute-size attributes)
                                            input (generate-new-buffer " *pi-session-scan*"))
                                      (with-current-buffer input (set-buffer-multibyte nil)))))))
                               ((not (file-exists-p path))
+                               (setq incomplete t)
                                (push (list :path path :message "Path does not exist") diagnostics)))
                            (error
                             (close-input)
+                            (setq incomplete t)
                             (push (list :path path :message "Cannot read session path") diagnostics))))))
                    (if (or input pending)
                        (setq timer (run-at-time 0.01 nil #'tick))
                      (setq cancelled t)
+                     (unless incomplete
+                       (dolist (root roots) (emacs-pi-history--save-index root seen)))
                      (funcall on-success
                               (list :items (nreverse items)
                                     :diagnostics (nreverse diagnostics)))))
