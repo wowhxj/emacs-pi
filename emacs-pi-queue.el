@@ -35,6 +35,8 @@
     (define-key map (kbd "RET") #'emacs-pi-queue-edit)
     (define-key map (kbd "M-<up>") #'emacs-pi-queue-move-up)
     (define-key map (kbd "M-<down>") #'emacs-pi-queue-move-down)
+    (define-key map (kbd "n") #'emacs-pi-queue-next-item)
+    (define-key map (kbd "p") #'emacs-pi-queue-previous-item)
     (define-key map (kbd "s") #'emacs-pi-queue-move-to-steering)
     (define-key map (kbd "f") #'emacs-pi-queue-move-to-follow-up)
     (define-key map (kbd "d") #'emacs-pi-queue-delete)
@@ -164,7 +166,7 @@
             (cond (emacs-pi-queue--busy " · applying…\n")
                   (emacs-pi-queue--dirty " · modified locally\n")
                   (t "\n"))
-            "RET edit · M-↑/↓ reorder · s/f change lane · d remove\n"
+            "n/p select · RET edit · M-↑/↓ reorder across lanes · s/f change lane · d remove\n"
             "C-c C-c apply · g discard local edits/refresh · q discard and close\n\n")
     (when emacs-pi-queue--notice
       (insert (propertize (concat emacs-pi-queue--notice "\n\n")
@@ -251,18 +253,58 @@
   (when emacs-pi-queue--busy
     (user-error "Queue rewrite is still in progress")))
 
+(defun emacs-pi-queue--item-positions ()
+  "Return the start positions of all queue items in display order."
+  (let ((position (point-min)) positions)
+    (while (< position (point-max))
+      (when (get-text-property position 'emacs-pi-queue-id)
+        (push position positions))
+      (setq position
+            (or (next-single-property-change
+                 position 'emacs-pi-queue-id nil (point-max))
+                (point-max))))
+    (nreverse positions)))
+
+(defun emacs-pi-queue--move-cursor (direction)
+  "Move point to the next or previous queue item by DIRECTION."
+  (let* ((positions (emacs-pi-queue--item-positions))
+         (target (if (> direction 0)
+                     (cl-find-if (lambda (position) (> position (point)))
+                                 positions)
+                   (car (last (cl-remove-if-not
+                               (lambda (position) (< position (point)))
+                               positions))))))
+    (if target
+        (goto-char target)
+      (user-error "No more queue items in that direction"))))
+
+(defun emacs-pi-queue-next-item ()
+  "Move point to the next queued message."
+  (interactive)
+  (emacs-pi-queue--move-cursor 1))
+
+(defun emacs-pi-queue-previous-item ()
+  "Move point to the previous queued message."
+  (interactive)
+  (emacs-pi-queue--move-cursor -1))
+
 (defun emacs-pi-queue--move (offset)
-  "Move the selected item by OFFSET within its lane."
+  "Move the selected item by OFFSET across the combined queue."
   (emacs-pi-queue--ensure-editable)
   (let* ((item (emacs-pi-queue--item-at-point))
-         (lane (emacs-pi-queue-item-lane item))
-         (items (if (eq lane 'steering) emacs-pi-queue--steering
-                  emacs-pi-queue--follow-up))
+         (items (emacs-pi-queue--all-items))
          (index (cl-position item items))
-         (target (+ index offset)))
+         (target (+ index offset))
+         (steering-count (length emacs-pi-queue--steering)))
     (when (or (< target 0) (>= target (length items)))
-      (user-error "Already at the end of this lane"))
+      (user-error "Already at the end of the queue"))
     (cl-rotatef (nth index items) (nth target items))
+    (setq emacs-pi-queue--steering (cl-subseq items 0 steering-count)
+          emacs-pi-queue--follow-up (cl-subseq items steering-count))
+    (cl-loop for queue-item in items
+             for item-index from 0
+             do (setf (emacs-pi-queue-item-lane queue-item)
+                      (if (< item-index steering-count) 'steering 'follow-up)))
     (setq emacs-pi-queue--dirty t)
     (emacs-pi--queue-render emacs-pi--queue-session)))
 

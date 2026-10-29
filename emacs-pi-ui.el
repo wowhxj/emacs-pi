@@ -64,6 +64,7 @@
     (define-key map (kbd "C-c C-s") #'emacs-pi-steer)
     (define-key map (kbd "C-c C-k") #'emacs-pi-stop)
     (define-key map (kbd "C-c C-l") #'emacs-pi-show-queue)
+    (define-key map (kbd "C-c C-u") #'emacs-pi-show-queue)
     (define-key map (kbd "C-c C-r") #'emacs-pi-resume)
     (define-key map (kbd "C-c C-b") #'emacs-pi-switch-chat)
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)

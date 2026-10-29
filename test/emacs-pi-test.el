@@ -1150,6 +1150,49 @@
       (when (get-buffer queue-name) (kill-buffer queue-name))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-queue-navigation-and-cross-lane-reordering ()
+  (let* ((root (make-temp-file "emacs-pi-queue-navigation-" t))
+         (session (make-emacs-pi-session
+                   :root root :client-id "navigate-123456" :phase 'ready
+                   :steering ["one"] :follow-up ["two" "three"]
+                   :queue-known t))
+         (chat (emacs-pi-ui-create session))
+         (queue-name "*pi-queue:naviga*"))
+    (unwind-protect
+        (save-window-excursion
+          (should (eq (lookup-key emacs-pi-chat-mode-map (kbd "C-c C-u"))
+                      #'emacs-pi-show-queue))
+          (should (eq (lookup-key emacs-pi-queue-mode-map (kbd "n"))
+                      #'emacs-pi-queue-next-item))
+          (should (eq (lookup-key emacs-pi-queue-mode-map (kbd "p"))
+                      #'emacs-pi-queue-previous-item))
+          (with-current-buffer chat (emacs-pi-show-queue))
+          (with-current-buffer queue-name
+            (goto-char (point-min))
+            (emacs-pi-queue-next-item)
+            (should (equal (emacs-pi-queue-item-text
+                            (emacs-pi-queue--item-at-point)) "one"))
+            (emacs-pi-queue-next-item)
+            (should (equal (emacs-pi-queue-item-text
+                            (emacs-pi-queue--item-at-point)) "two"))
+            (emacs-pi-queue-previous-item)
+            (should (equal (emacs-pi-queue-item-text
+                            (emacs-pi-queue--item-at-point)) "one"))
+            (search-forward "1. two")
+            (emacs-pi-queue-move-up)
+            (should (equal (let ((snapshot (emacs-pi-queue--desired-snapshot)))
+                             (list (car snapshot) (cdr snapshot)))
+                           '(("two") ("one" "three"))))
+            (search-forward "2. three")
+            (emacs-pi-queue-move-up)
+            (emacs-pi-queue-move-up)
+            (should (equal (let ((snapshot (emacs-pi-queue--desired-snapshot)))
+                             (list (car snapshot) (cdr snapshot)))
+                           '(("three") ("two" "one"))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
+      (when (get-buffer queue-name) (kill-buffer queue-name))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-queue-reorders-and-replays-images ()
   (let* ((root (make-temp-file "emacs-pi-queue-edit-" t))
          (attachments (make-hash-table :test #'equal))
