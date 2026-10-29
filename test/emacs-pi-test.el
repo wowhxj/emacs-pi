@@ -1709,7 +1709,8 @@
                                          :phase 'ready))
          (buffer (emacs-pi-ui-create session))
          (record (list :id "saved-123" :name "Earlier work"
-                       :cwd root :preview "First prompt")))
+                       :cwd root :preview "First prompt"))
+         (original-group-format (bound-and-true-p vertico-group-format)))
     (unwind-protect
         (progn
           (with-temp-file file (insert "example"))
@@ -1723,6 +1724,8 @@
                         ((symbol-function 'completing-read)
                          (lambda (_prompt choices &rest args)
                            (should (equal (nth 2 args) "alpha"))
+                           (should (equal (bound-and-true-p vertico-group-format)
+                                          original-group-format))
                            (should (memq 'substring completion-styles))
                            (should completion-ignore-case)
                            (should read-file-name-completion-ignore-case)
@@ -1800,12 +1803,27 @@
                            (should (equal (nth 2 args) ""))
                            (with-temp-buffer
                              (should (= (length (all-completions "" choices)) 1))
-                             (should (string-suffix-p "[session]"
-                                                      (caar choices)))
-                             (caar choices)))))
+                             (let* ((candidates (all-completions "" choices))
+                                    (metadata (completion-metadata "" choices nil))
+                                    (group (completion-metadata-get metadata 'group-function)))
+                               (should-not (string-match-p "Untitled" (car candidates)))
+                               (should (eq (completion-metadata-get metadata 'display-sort-function)
+                                           'identity))
+                               (should (equal (bound-and-true-p vertico-group-format) "%s"))
+                               (let ((header (funcall group (car candidates) nil)))
+                                 (should (string-match-p "最后交互" header))
+                                 (when (fboundp 'vertico--format-group-title)
+                                   (should (equal
+                                            (substring-no-properties
+                                             (funcall 'vertico--format-group-title
+                                                      header (car candidates)))
+                                            (concat (substring-no-properties header) "\n")))))
+                               (should (equal (funcall group (car candidates) t) (car candidates)))
+                               (car candidates))))))
                 (emacs-pi-complete))
               (should (equal (emacs-pi-input-text)
                              "Use @[Earlier work](pi-session:saved-123)"))
+              (should (equal (bound-and-true-p vertico-group-format) original-group-format))
               (emacs-pi-input-set "/de")
               (setf (emacs-pi-session-commands session)
                     (list (emacs-pi--jobject "name" "demo"
@@ -1817,6 +1835,86 @@
               (should (equal (emacs-pi-input-text) "/demo")))))
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
+
+(ert-deftest emacs-pi-history-last-user-time-ignores-other-activity ()
+  (let ((record (emacs-pi-history--empty-record "/unused")))
+    (dolist (entry
+             (list (emacs-pi--jobject
+                    "type" "message" "timestamp" "2026-10-20T08:00:00Z"
+                    "message" (emacs-pi--jobject "role" "user" "content" "第一句话"))
+                   (emacs-pi--jobject
+                    "type" "message" "timestamp" "2026-10-20T09:00:00Z"
+                    "message" (emacs-pi--jobject "role" "user" "content" "最后一句话"
+                                                 "timestamp" 1792486800000))
+                   (emacs-pi--jobject
+                    "type" "message" "message"
+                    (emacs-pi--jobject "role" "assistant" "content" "Later reply"
+                                         "timestamp" 1792490400000))
+                   (emacs-pi--jobject "type" "session_info" "name" "Renamed")))
+      (emacs-pi-history--consume record (emacs-pi--jencode entry)))
+    (should (equal (plist-get record :preview) "第一句话"))
+    (should (equal (plist-get record :last-preview) "最后一句话"))
+    (should (= (float-time (plist-get record :last-user-time)) 1792486800))
+    (should (= (plist-get record :activity) 1792490400))
+    ;; Incremental consumers also use the entry ISO timestamp when needed.
+    (emacs-pi-history--consume
+     record (emacs-pi--jencode
+             (emacs-pi--jobject "type" "message" "timestamp" "2026-10-21T08:00:00Z"
+                                "message" (emacs-pi--jobject "role" "user" "content" []))))
+    (should (equal (format-time-string "%Y-%m-%d %H:%M"
+                                       (plist-get record :last-user-time) t)
+                   "2026-10-21 08:00"))
+    (should (equal (plist-get record :last-preview) "[Non-text user message]"))
+    ;; Do not attach an older user's timestamp to an undated latest query.
+    (emacs-pi-history--consume
+     record "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"Undated\"}}")
+    (should-not (plist-get record :last-user-time))
+    (should (equal (plist-get record :last-preview) "Undated"))))
+
+(ert-deftest emacs-pi-session-picker-aligns-first-and-latest-queries ()
+  (let* ((emacs-pi--session nil)
+         (stamp (date-to-time "2026-10-20T09:00:00Z"))
+         (records (list (list :id "first-session" :cwd "/short" :last-user-time stamp
+                              :preview "第一句话\n请看这个 query"
+                              :last-preview "最后一句话\t请提交修改")
+                        (list :id "other-session" :cwd "/a/much/longer/project"
+                              :preview (make-string 100 ?中) :last-preview "Done"))))
+    (cl-letf (((symbol-function 'emacs-pi-history-list) (lambda () records)))
+      (dolist (width '(64 80 120 180 240))
+        (let* ((choices (emacs-pi-input--session-choices width))
+               (columns (mapcar (lambda (choice)
+                                  (split-string (car choice) " │ ")) choices))
+               (header (get-text-property 0 'emacs-pi-session-header (caar choices))))
+          (should (equal (mapcar #'string-width (car columns))
+                         (mapcar #'string-width (cadr columns))))
+          (should (equal (mapcar #'string-width (car columns))
+                         (mapcar #'string-width (split-string header " │ "))))
+          (should (<= (string-width (caar choices)) width))
+          (should (= (length (car columns)) (if (>= width 120) 5 4)))
+          (should (string-prefix-p (format-time-string "%Y-%m-%d %H:%M" stamp)
+                                  (caar choices)))
+          (should-not (string-match-p "[\n\r\t]" (caar choices)))
+          (should (string-match-p "第一" (caar choices)))
+          (should (string-match-p "最后" (caar choices)))
+          (should-not (string-match-p "Untitled\\|\\[session\\]" (caar choices))))))))
+
+(ert-deftest emacs-pi-session-picker-orders-users-and-distinguishes-ids ()
+  (let* ((emacs-pi--session (make-emacs-pi-session :session-id "current"))
+         (older (list :id "0123456789ab-older" :preview "Same query"
+                       :last-user-time (seconds-to-time 1) :modified (seconds-to-time 99)))
+         (newer (list :id "0123456789ab-newer" :preview "Same query"
+                       :last-user-time (seconds-to-time 2)))
+         (records (list older (list :id "unknown" :preview "Undated") newer
+                        older (list :id "current") (list :id "bad/id") (list :id nil))))
+    (cl-letf (((symbol-function 'emacs-pi-history-list) (lambda () records)))
+      (let ((choices (emacs-pi-input--session-choices 180)))
+        (should (= (length choices) 3))
+        (should (string-suffix-p "(pi-session:0123456789ab-newer)" (cdar choices)))
+        (should (string-suffix-p "(pi-session:0123456789ab-older)" (cdr (nth 1 choices))))
+        (should (string-suffix-p "(pi-session:unknown)" (cdr (nth 2 choices))))
+        (should (= (length (delete-dups (mapcar #'car choices))) 3))
+        (should (string-match-p "0123456789ab-n" (caar choices)))
+        (should (string-match-p "0123456789ab-o" (car (nth 1 choices))))))))
 
 (ert-deftest emacs-pi-session-reference-sends-active-dialogue ()
   (let* ((root (make-temp-file "emacs-pi-reference-" t))

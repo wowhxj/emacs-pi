@@ -14,7 +14,7 @@ A native Emacs chat interface for [Pi Coding Agent](https://github.com/badlogic/
 - Choose available models and thinking levels; discover Pi extension commands.
 - Queue follow-up prompts or steer a running conversation, and review or edit the queue.
 - Attach PNG/JPEG images, paste clipboard images, and open received images externally.
-- Complete slash commands, project files, and saved sessions from the input area. `@` completes files and directories; `@session` opens the saved-session picker.
+- Complete slash commands, project files, and saved sessions from the input area. `@` completes files and directories; `@session` opens the saved-session picker, with aligned columns for the last user message's local timestamp and the first/latest user queries, followed by project and short ID. Sessions are sorted by last user interaction (newest first); narrow windows hide the project column. Missing timestamps show `—`, not file or assistant activity times.
 
 ## Requirements
 

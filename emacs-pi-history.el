@@ -109,9 +109,10 @@ JSON serialization overhead."
                (unless (plist-get record :has-user)
                  (setf (plist-get record :preview)
                        (if (string-empty-p text) "[Non-text user message]" text)))
-               (setf (plist-get record :has-user) t)
-               (unless (string-empty-p text)
-                 (setf (plist-get record :last-preview) text))))
+               (setf (plist-get record :has-user) t
+                     (plist-get record :last-user-time) nil
+                     (plist-get record :last-preview)
+                     (if (string-empty-p text) "[Non-text user message]" text))))
            (when (member role '("user" "assistant"))
              (let* ((stamp (emacs-pi--jget message "timestamp"))
                     (seconds (if (numberp stamp) (/ stamp 1000.0)
@@ -119,6 +120,8 @@ JSON serialization overhead."
                                  (unless (stringp entry-time)
                                    (error "Missing message timestamp"))
                                  (float-time (date-to-time entry-time))))))
+               (when (equal role "user")
+                 (setf (plist-get record :last-user-time) (seconds-to-time seconds)))
                (setf (plist-get record :activity)
                      (max seconds (or (plist-get record :activity) seconds))))))))
     (error (cl-incf (plist-get record :invalid-lines))))
@@ -127,7 +130,7 @@ JSON serialization overhead."
 (defun emacs-pi-history--empty-record (path)
   "Make an accumulator for PATH."
   (list :path path :id nil :cwd nil :created nil :preview nil
-        :last-preview nil :name nil :message-count 0 :has-user nil
+        :last-preview nil :last-user-time nil :name nil :message-count 0 :has-user nil
         :activity nil :invalid-lines 0))
 
 (defun emacs-pi-history--finish-record (record)
@@ -160,9 +163,10 @@ JSON serialization overhead."
       (emacs-pi-history--finish-record record))))
 
 (defun emacs-pi-history--signature (attributes)
-  "Return content metadata and identity from file ATTRIBUTES, excluding atime."
+  "Return parser schema, content metadata and identity from ATTRIBUTES."
   (when attributes
-    (list (file-attribute-size attributes)
+    ;; Rebuild old cached previews after a live reload adds user timestamps.
+    (list 'last-user-time (file-attribute-size attributes)
           (file-attribute-modification-time attributes)
           (file-attribute-status-change-time attributes)
           (file-attribute-inode-number attributes)

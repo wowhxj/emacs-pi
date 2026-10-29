@@ -15,10 +15,12 @@
 
 (declare-function emacs-pi-ui--image-preview-string "emacs-pi-ui")
 (declare-function emacs-pi-ui-view-image "emacs-pi-ui")
+(declare-function emacs-pi--middle-truncate "emacs-pi")
 
 ;; Optional Orderless setting; path completion binds it locally so matching
 ;; remains case-insensitive even when the user's global smart-case is enabled.
 (defvar orderless-smart-case)
+(defvar vertico-group-format)
 
 (defvar-local emacs-pi--attachments nil)
 (defvar-local emacs-pi--attachment-overlay nil)
@@ -334,26 +336,77 @@ the directory whose contents should be offered."
     (format "@[%s](pi-session:%s)"
             (truncate-string-to-width clean 64 nil nil "…") id)))
 
-(defun emacs-pi-input--session-choices ()
-  "Return saved Pi sessions for the @session picker."
-  (let ((current-id (and emacs-pi--session
-                         (emacs-pi-session-session-id emacs-pi--session))))
-    (cl-loop for record in (emacs-pi-history-list)
-             for id = (plist-get record :id)
-             unless (or (not (stringp id))
-                        (equal id current-id)
-                        (not (string-match-p "\\`[[:alnum:]_-]+\\'" id)))
-             collect
-             (cons (format "%s · %s · %s · %s  [session]"
-                           (or (plist-get record :name) "Untitled")
-                           (substring id 0 (min 12 (length id)))
-                           (abbreviate-file-name
-                            (or (plist-get record :cwd) ""))
-                           (truncate-string-to-width
-                            (or (plist-get record :last-preview)
-                                (plist-get record :preview) "")
-                            70 nil nil "…"))
-                   (emacs-pi-input--session-mention record)))))
+(defun emacs-pi-input--session-column (text width &optional face)
+  "Make TEXT a single-line column of display WIDTH, optionally using FACE."
+  (let ((column (truncate-string-to-width
+                 (string-trim (replace-regexp-in-string
+                               "[[:space:]\n\r]+" " " (or text "—")))
+                 width nil ?\s "…")))
+    (if face (propertize column 'face face) column)))
+
+(defun emacs-pi-input--session-choices (&optional width)
+  "Return saved Pi sessions for the @session picker within display WIDTH.
+Prioritize first/latest user queries; hide the project column on narrow
+windows.  The first label carries the column header for completion UIs."
+  (let* ((current-id (and emacs-pi--session
+                          (emacs-pi-session-session-id emacs-pi--session)))
+         (seen (make-hash-table :test #'equal))
+         (records
+          (cl-loop for record in (emacs-pi-history-list)
+                   for id = (plist-get record :id)
+                   when (and (stringp id) (not (equal id current-id))
+                             (string-match-p "\\`[[:alnum:]_-]+\\'" id)
+                             (not (gethash id seen)))
+                   collect (progn (puthash id t seen) record)))
+         (ids (mapcar (lambda (record) (plist-get record :id)) records))
+         (id-width 12)
+         (width (or width (- (window-body-width (minibuffer-window)) 4))))
+    ;; Extend colliding UUID prefixes, keeping the ID column aligned and unique.
+    (while (not (= (length
+                    (delete-dups
+                     (mapcar (lambda (id)
+                               (substring id 0 (min id-width (length id))))
+                             ids)))
+                   (length ids)))
+      (cl-incf id-width))
+    (setq records
+          (cl-stable-sort records
+                          (lambda (a b)
+                            (time-less-p (or (plist-get b :last-user-time) '(0 0))
+                                         (or (plist-get a :last-user-time) '(0 0))))))
+    (let* ((project-width (if (>= width 120) (min 30 (/ width 6)) 0))
+           (query-space (max 12 (- width 16 id-width 9
+                                  (if (> project-width 0) (+ project-width 3) 0))))
+           (first-width (/ query-space 2))
+           (last-width (- query-space first-width))
+           (row (lambda (time first last project id &optional heading)
+                  (string-join
+                   (append
+                    (list (emacs-pi-input--session-column time 16)
+                          (emacs-pi-input--session-column first first-width)
+                          (emacs-pi-input--session-column last last-width))
+                    (when (> project-width 0)
+                      (list (emacs-pi-input--session-column
+                             (emacs-pi--middle-truncate (or project "—") project-width)
+                             project-width (unless heading 'shadow))))
+                    (list (emacs-pi-input--session-column
+                           (substring id 0 (min id-width (length id)))
+                           id-width (unless heading 'shadow))))
+                   (propertize " │ " 'face 'shadow))))
+           (header (funcall row "最后交互" "用户首句" "用户末句" "项目" "ID" t)))
+      (cl-loop for record in records
+               for stamp = (plist-get record :last-user-time)
+               for label = (funcall row
+                                    (if stamp (format-time-string "%Y-%m-%d %H:%M" stamp)
+                                      "—")
+                                    (plist-get record :preview)
+                                    (or (plist-get record :last-preview)
+                                        (plist-get record :preview))
+                                    (when-let* ((cwd (plist-get record :cwd)))
+                                      (abbreviate-file-name cwd))
+                                    (plist-get record :id))
+               collect (cons (propertize label 'emacs-pi-session-header header)
+                             (emacs-pi-input--session-mention record))))))
 
 (defun emacs-pi-input--slash-choices ()
   "Return local and Pi-provided slash commands for the picker."
@@ -439,7 +492,17 @@ the directory whose contents should be offered."
                         current-choices))
                     t)
                    '((category . emacs-pi-file)))
-                choices))
+                (if (eq kind 'session)
+                    (let ((header (get-text-property
+                                   0 'emacs-pi-session-header (caar choices))))
+                      (completion-table-with-metadata
+                       choices
+                       `((category . emacs-pi-session)
+                         (display-sort-function . identity)
+                         (cycle-sort-function . identity)
+                         (group-function . ,(lambda (candidate transform)
+                                              (if transform candidate header))))))
+                  choices)))
              (completion-extra-properties
               (when (eq kind 'reference)
                 (list
@@ -451,6 +514,9 @@ the directory whose contents should be offered."
                        (format "  [%s]"
                                (if (file-directory-p file)
                                    "directory" "file"))))))))
+             ;; Column headers must not inherit Vertico's group decoration.
+             (vertico-group-format
+              (if (eq kind 'session) "%s" (bound-and-true-p vertico-group-format)))
              (completion-styles
               (if (memq 'substring completion-styles)
                   completion-styles
