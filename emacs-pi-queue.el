@@ -164,8 +164,8 @@
             (cond (emacs-pi-queue--busy " · applying…\n")
                   (emacs-pi-queue--dirty " · modified locally\n")
                   (t "\n"))
-            "n/p select · RET edit · M-↑/↓ reorder across lanes · d remove\n"
-            "x apply · g discard local edits/refresh · q discard and close\n\n")
+            "n/p select · RET edit · M-↑ promote follow-up / move earlier · d remove\n"
+            "M-↓ move later / move to Follow-up at boundary · x apply · g refresh · q close\n\n")
     (when emacs-pi-queue--notice
       (insert (propertize (concat emacs-pi-queue--notice "\n\n")
                           'face 'warning)))
@@ -299,8 +299,7 @@
                           (= target (length lane-items))
                         (< target 0))))
     (cond
-     ((and (= offset -1) (eq lane 'follow-up)
-           emacs-pi-queue--steering)
+     ((and (= offset -1) (eq lane 'follow-up))
       (setq emacs-pi-queue--follow-up (delq item emacs-pi-queue--follow-up)
             emacs-pi-queue--steering (append emacs-pi-queue--steering (list item)))
       (setf (emacs-pi-queue-item-lane item) 'steering))

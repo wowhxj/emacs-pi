@@ -1206,7 +1206,7 @@
   (let* ((root (make-temp-file "emacs-pi-queue-promote-" t))
          (session (make-emacs-pi-session
                    :root root :client-id "promote-123456" :phase 'ready
-                   :steering ["steer"] :follow-up ["first" "selected"]
+                   :steering [] :follow-up ["first" "selected"]
                    :queue-known t))
          (chat (emacs-pi-ui-create session))
          (queue-name "*pi-queue:promot*")
@@ -1222,7 +1222,7 @@
             (should (eq (emacs-pi-queue-item-lane item) 'steering))
             (should (equal (let ((snapshot (emacs-pi-queue--desired-snapshot)))
                              (list (car snapshot) (cdr snapshot)))
-                           '(("steer" "selected") ("first"))))))
+                           '(("selected") ("first"))))))
       (when (buffer-live-p chat) (kill-buffer chat))
       (when (get-buffer queue-name) (kill-buffer queue-name))
       (delete-directory root t))))
