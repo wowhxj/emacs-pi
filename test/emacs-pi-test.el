@@ -542,6 +542,24 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-i-focuses-transcript-and-types-in-composer ()
+  (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (session (make-emacs-pi-session :root root :client-id "i-focus-123456"
+                                         :phase 'ready))
+         (buffer (emacs-pi-ui-create session)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (emacs-pi-input-set "hello")
+          (goto-char (point-min))
+          (emacs-pi-ui-i)
+          (should (= (point) (emacs-pi-input-end)))
+          (goto-char (emacs-pi-input-beginning))
+          (let ((last-command-event ?i))
+            (emacs-pi-ui-i))
+          (should (equal (emacs-pi-input-text) "ihello")))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory root t))))
+
 (ert-deftest emacs-pi-composer-navigation-and-background ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
          (session (make-emacs-pi-session :root root :client-id "nav-123456"

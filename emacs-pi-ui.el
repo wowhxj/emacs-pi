@@ -70,6 +70,7 @@
     (define-key map (kbd "C-c C-i") #'emacs-pi-focus-input)
     (define-key map (kbd "C-c C-t") #'emacs-pi-copy-mode)
     (define-key map (kbd "C-c C-j") #'emacs-pi-semi-char-mode)
+    (define-key map (kbd "i") #'emacs-pi-ui-i)
     (define-key map (kbd "C-c C-p") #'emacs-pi-paste)
     (define-key map (kbd "C-c C-o") #'emacs-pi-input-open-image)
     (define-key map (kbd "s-v") #'emacs-pi-paste)
@@ -157,6 +158,14 @@
   (emacs-pi-ui-render emacs-pi--session)
   (emacs-pi-focus-input)
   (force-mode-line-update t))
+
+(defun emacs-pi-ui-i ()
+  "Insert i in the composer, or focus the composer from the transcript."
+  (interactive)
+  (if (and (>= (point) (emacs-pi-input-beginning))
+           (<= (point) (emacs-pi-input-end)))
+      (self-insert-command 1)
+    (emacs-pi-focus-input)))
 
 (defun emacs-pi-ui-beginning-of-line ()
   "Move to line start without entering the protected composer prompt."

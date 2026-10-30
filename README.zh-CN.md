@@ -66,7 +66,7 @@
 | 添加图片 / 打开图片 | `M-x emacs-pi-attach-image` / `C-c C-o` |
 | 粘贴剪贴板内容 | `C-c C-p`（macOS 也可用 `s-v`） |
 | 浏览输入历史 | `M-p` / `M-n` |
-| 进入复制模式 / 返回输入区（semi-char mode） | `C-c C-t` / `C-c C-j` |
+| 进入复制模式 / 返回输入区（semi-char mode） | `C-c C-t` / `C-c C-j`；光标在输入区外时按 `i` 返回，输入区内则正常输入 `i` |
 | 聚焦输入区 | `C-c C-i` |
 | 关闭聊天 / 关闭其 Pi 进程 | `C-c C-q` / `M-x emacs-pi-shutdown` |
 

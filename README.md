@@ -67,7 +67,7 @@ Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session
 | Attach an image / open an image | `M-x emacs-pi-attach-image` / `C-c C-o` |
 | Paste from the clipboard | `C-c C-p` (also `s-v` on macOS) |
 | Browse prompt history | `M-p` / `M-n` |
-| Enter copy mode / return to input (semi-char mode) | `C-c C-t` / `C-c C-j` |
+| Enter copy mode / return to input (semi-char mode) | `C-c C-t` / `C-c C-j`; press `i` outside the composer to return, or type `i` inside it |
 | Focus the input area | `C-c C-i` |
 | Close the chat / shut down its Pi process | `C-c C-q` / `M-x emacs-pi-shutdown` |
 
