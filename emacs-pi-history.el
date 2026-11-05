@@ -19,6 +19,14 @@ When nil, use Pi's environment or default agent directory."
   "Approximate total dialogue characters added for @session references."
   :type 'integer :group 'emacs-pi)
 
+(defcustom emacs-pi-session-read-max-bytes (* 128 1024 1024)
+  "Largest Pi session file read for @session references and Hub details."
+  :type 'integer :group 'emacs-pi)
+
+(defcustom emacs-pi-history-index-max-bytes (* 32 1024 1024)
+  "Largest history cache index file loaded; bigger indexes are ignored."
+  :type 'integer :group 'emacs-pi)
+
 (defcustom emacs-pi-history-request-timeout 180
   "Seconds to wait for Pi to return session history over RPC."
   :type 'number :group 'emacs-pi)
@@ -65,7 +73,7 @@ not full transcripts.  They are read as JSON data, never executed."
       (puthash file t emacs-pi-history--loaded-indexes)
       (condition-case nil
           (when (and (file-readable-p file)
-                     (< (file-attribute-size (file-attributes file)) (* 32 1024 1024)))
+                     (< (file-attribute-size (file-attributes file)) emacs-pi-history-index-max-bytes))
             (let ((data (with-temp-buffer
                           (insert-file-contents file)
                           (json-parse-buffer :object-type 'plist :array-type 'list
@@ -493,8 +501,9 @@ Only user and assistant text and Pi's own summaries are included."
          (path (plist-get record :path))
          (size (and path (file-attributes path))))
     (unless size (user-error "Referenced Pi session is no longer available"))
-    (when (> (file-attribute-size size) (* 64 1024 1024))
-      (user-error "Referenced Pi session exceeds the 64 MiB reading limit"))
+    (when (> (file-attribute-size size) emacs-pi-session-read-max-bytes)
+      (user-error "Referenced Pi session exceeds the %s reading limit (emacs-pi-session-read-max-bytes)"
+                  (file-size-human-readable emacs-pi-session-read-max-bytes 'iec)))
     (with-temp-buffer
       (insert-file-contents path)
       (goto-char (point-min))

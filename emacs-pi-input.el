@@ -68,6 +68,10 @@ TAB on @NAME calls FUNCTION with the chat root.  It returns a file path to
 insert as an @ reference, or nil to leave the draft unchanged."
   :type '(alist :key-type string :value-type function) :group 'emacs-pi)
 
+(defcustom emacs-pi-image-max-bytes (* 10 1024 1024)
+  "Largest PNG or JPEG file attached to a Pi prompt."
+  :type 'integer :group 'emacs-pi)
+
 (defcustom emacs-pi-pngpaste-executable "pngpaste"
   "Program used to paste a macOS clipboard image as PNG.
 Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
@@ -190,7 +194,9 @@ Set this to an absolute path if GUI Emacs cannot find Homebrew programs."
 (defun emacs-pi-input--image-object (file &optional name)
   "Read PNG or JPEG FILE into a Pi image object, optionally named NAME."
   (let* ((size (file-attribute-size (file-attributes file))))
-    (when (> size (* 10 1024 1024)) (user-error "Image exceeds 10 MiB"))
+    (when (> size emacs-pi-image-max-bytes)
+      (user-error "Image exceeds %s (emacs-pi-image-max-bytes)"
+                  (file-size-human-readable emacs-pi-image-max-bytes 'iec)))
     (let* ((data (with-temp-buffer
                  (set-buffer-multibyte nil)
                  (insert-file-contents-literally file)
