@@ -1133,6 +1133,110 @@
       (when (buffer-live-p buffer) (kill-buffer buffer))
       (delete-directory root t))))
 
+(ert-deftest emacs-pi-header-rich-stats-and-width ()
+  (with-temp-buffer
+    (setq-local emacs-pi--session
+                (make-emacs-pi-session
+                 :model (emacs-pi--jobject "provider" "test%provider" "id" "model")
+                 :thinking "high"
+                 :context-usage (emacs-pi--jobject
+                                 "tokens" 180400 "contextWindow" 1000000
+                                 "percent" 18.04)
+                 :stats (emacs-pi--jobject
+                         "userMessages" 5 "assistantMessages" 107
+                         "tokens" (emacs-pi--jobject
+                                   "input" 100000 "output" 100000
+                                   "cacheRead" 13800000 "cacheWrite" 0
+                                   "total" 14000000)
+                         "cost" 1.2345)))
+    (cl-letf (((symbol-function 'window-total-width) (lambda (&rest _) 200)))
+      (let ((header (emacs-pi-ui--header)))
+        (dolist (text '("180.4k/1.0M (18%%)" "5 prompts · 107 calls"
+                        "14.0M tok" "cache 99%%" "$1.2345"
+                        "(test%%provider) model · high"))
+          (should (string-match-p (regexp-quote text) header)))
+        (should (string-match-p "not a request hit rate"
+                                (get-text-property 0 'help-echo header)))))
+    (dolist (width '(100 80 60 40 24 10 5))
+      (cl-letf (((symbol-function 'window-total-width)
+                 (lambda (&rest _) width)))
+        (let* ((header (emacs-pi-ui--header))
+               (visible (replace-regexp-in-string "%%" "%" header)))
+          (should (<= (string-width visible) width))
+          ;; Hidden metrics stay available via the tooltip.
+          (should (string-match-p "14.0M tok"
+                                  (get-text-property 0 'help-echo header)))
+          (when (= width 60)
+            (should (string-match-p "model · high" header))
+            (should-not (string-match-p "cache" header))))))))
+
+(ert-deftest emacs-pi-header-missing-null-and-zero-stats ()
+  (with-temp-buffer
+    (setq-local emacs-pi--session (make-emacs-pi-session))
+    (should (equal (emacs-pi-ui--stat-segments emacs-pi--session)
+                   '("context: —")))
+    (setf (emacs-pi-session-stats emacs-pi--session)
+          (emacs-pi--jobject
+           "userMessages" 0 "assistantMessages" 0 "cost" 0
+           "tokens" (emacs-pi--jobject "input" 0 "output" 0 "cacheRead" 0
+                                     "cacheWrite" 0 "total" 0)))
+    (should (equal (emacs-pi-ui--stat-segments emacs-pi--session)
+                   '("context: —" "0 prompts · 0 calls" "0 tok" "$0.0000")))
+    (setf (emacs-pi-session-context-usage emacs-pi--session)
+          (emacs-pi--jobject "tokens" :null "contextWindow" 1000000
+                            "percent" :null)
+          (emacs-pi-session-stats emacs-pi--session)
+          (emacs-pi--jobject "cost" :null "tokens" :null))
+    (should (equal (emacs-pi-ui--stat-segments emacs-pi--session)
+                   '("context: —")))
+    (setf (emacs-pi-session-model emacs-pi--session)
+          (emacs-pi--jobject "provider" "test\nprovider" "id" "model\rname"))
+    (let ((header (emacs-pi-ui--header)))
+      (should (stringp header))
+      (should-not (string-match-p "[\r\n]" header)))))
+
+(ert-deftest emacs-pi-header-cache-share-excludes-output ()
+  (let ((session (make-emacs-pi-session
+                  :stats (emacs-pi--jobject
+                          "tokens" (emacs-pi--jobject
+                                    "input" 100 "cacheRead" 600 "cacheWrite" 300
+                                    "output" 1000 "total" 2000)))))
+    (should (member "cache 60%" (emacs-pi-ui--stat-segments session)))
+    ;; A partial usage object is unknown, not a zero cache hit rate.
+    (setf (emacs-pi-session-stats session)
+          (emacs-pi--jobject "tokens" (emacs-pi--jobject "input" 100)))
+    (should (equal (emacs-pi-ui--stat-segments session) '("context: —")))))
+
+(ert-deftest emacs-pi-header-context-warning-faces ()
+  (let ((session (make-emacs-pi-session)))
+    (dolist (sample '((79 nil) (80 warning) (94 warning) (95 error)))
+      (setf (emacs-pi-session-context-usage session)
+            (emacs-pi--jobject "tokens" 80000 "contextWindow" 100000
+                              "percent" (car sample)))
+      (should (eq (get-text-property
+                   0 'face (car (emacs-pi-ui--stat-segments session)))
+                  (cadr sample))))))
+
+(ert-deftest emacs-pi-session-retains-full-stats-safely ()
+  (let* ((session (make-emacs-pi-session :generation 1))
+         (usage (emacs-pi--jobject "tokens" 42 "contextWindow" 100))
+         (stats (emacs-pi--jobject "contextUsage" usage "cost" 0.25))
+         callback)
+    (cl-letf (((symbol-function 'emacs-pi-rpc-request)
+               (lambda (_connection command _args cb &rest _)
+                 (should (equal command "get_session_stats"))
+                 (setq callback cb))))
+      (emacs-pi-session-refresh-stats session)
+      (funcall callback (list :ok t :data stats))
+      (should (eq (emacs-pi-session-stats session) stats))
+      (should (eq (emacs-pi-session-context-usage session) usage))
+      (funcall callback '(:ok nil :message "unavailable"))
+      (should (eq (emacs-pi-session-stats session) stats))
+      (emacs-pi-session-refresh-stats session)
+      (cl-incf (emacs-pi-session-generation session))
+      (funcall callback (list :ok t :data (emacs-pi--jobject "cost" 999)))
+      (should (eq (emacs-pi-session-stats session) stats)))))
+
 (ert-deftest emacs-pi-queue-counts-and-image-preview ()
   (let* ((root (make-temp-file "emacs-pi-queue-" t))
          (session (make-emacs-pi-session

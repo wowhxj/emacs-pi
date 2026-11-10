@@ -55,6 +55,12 @@ Run `M-x emacs-pi-chat`, choose a project directory, then select a saved session
 
 `/compact [instructions]` compacts the current context through Pi RPC. The slash picker, completion, dispatch, and `/help` share the same client command registry and current RPC-discovered extensions/templates/skills. Pi CLI commands whose full interactive workflows are not available over RPC are intentionally not exposed in Emacs.
 
+## Top status bar
+
+The top line shows current context usage and percentage, user/assistant message counts (`prompts`/`calls`), full-session tokens, cache-read token share, and Pi's estimated USD cost. Model, provider, and thinking level sit on the right. Statistics refresh after runs settle and context changes, not on each streamed token.
+
+Narrow windows hide optional metrics first; hover over the line for the full summary. Context usage warns at 80% and alerts at 95%. Cache percentage is `cacheRead / (input + cacheRead + cacheWrite)`, not a request hit rate. Missing data stays hidden or unknown; immediately after compaction, context usage can remain unknown until the next response.
+
 ## Keyboard shortcuts
 
 | Action | Shortcut |

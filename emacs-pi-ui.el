@@ -275,31 +275,95 @@
         ((>= value 1000) (format "%.1fk" (/ value 1000.0)))
         (t (number-to-string value))))
 
+(defun emacs-pi-ui--stat-segments (session)
+  "Return SESSION's known statistics, most important first."
+  (let* ((usage (emacs-pi-session-context-usage session))
+         (used (emacs-pi--jget usage "tokens"))
+         (capacity (emacs-pi--jget usage "contextWindow"))
+         (percent (emacs-pi--jget usage "percent"))
+         (stats (emacs-pi-session-stats session))
+         (tokens (emacs-pi--jget stats "tokens"))
+         (input (emacs-pi--jget tokens "input"))
+         (read (emacs-pi--jget tokens "cacheRead"))
+         (write (emacs-pi--jget tokens "cacheWrite"))
+         (total (emacs-pi--jget tokens "total"))
+         (prompts (emacs-pi--jget stats "userMessages"))
+         (calls (emacs-pi--jget stats "assistantMessages"))
+         (cost (emacs-pi--jget stats "cost"))
+         (context (if (and (numberp used) (numberp capacity))
+                      (format "%s/%s%s"
+                              (emacs-pi-ui--format-tokens used)
+                              (emacs-pi-ui--format-tokens capacity)
+                              (if (numberp percent)
+                                  (format " (%.0f%%)" percent) ""))
+                    "context: —")))
+    (when (and (numberp percent) (>= percent 80))
+      (setq context (propertize context 'face
+                                (if (>= percent 95) 'error 'warning))))
+    (delq nil
+          (list context
+                (when (and (numberp prompts) (numberp calls))
+                  (format "%d prompts · %d calls" prompts calls))
+                (when (numberp total)
+                  (format "%s tok" (emacs-pi-ui--format-tokens total)))
+                (when (and (numberp input) (numberp read) (numberp write)
+                           (> (+ input read write) 0))
+                  (format "cache %.0f%%"
+                          (* 100.0 (/ (float read) (+ input read write)))))
+                (when (numberp cost) (format "$%.4f" cost))))))
+
 (defun emacs-pi-ui--header ()
-  "Return Pi context usage and model for the tab line."
-  (let ((session emacs-pi--session))
-    (when session
-      (let* ((model (emacs-pi-session-model session))
-             (provider (emacs-pi--jget model "provider"))
-             (id (emacs-pi--jget model "id"))
-             (usage (emacs-pi-session-context-usage session))
-             (tokens (emacs-pi--jget usage "tokens"))
-             (window (emacs-pi--jget usage "contextWindow"))
-             (left (if (and (numberp tokens) (numberp window))
-                       (format "%s/%s"
-                               (emacs-pi-ui--format-tokens tokens)
-                               (emacs-pi-ui--format-tokens window))
-                     "context: —"))
-             (right (format "%s · %s"
-                            (if (and provider id)
-                                (format "(%s) %s" provider id)
-                              "model pending")
-                            (or (emacs-pi-session-thinking session)
-                                "thinking pending"))))
-        (concat " " left " "
-                (propertize " " 'display
-                            `(space :align-to (- right ,(string-width right))))
-                (replace-regexp-in-string "%" "%%" right))))))
+  "Return width-aware Pi statistics and model for the tab line.
+This only reads cached RPC data; redisplay never issues requests."
+  (when-let* ((session emacs-pi--session))
+    (let* ((model (emacs-pi-session-model session))
+           (provider (emacs-pi--jget model "provider"))
+           (id (emacs-pi--jget model "id"))
+           (thinking (emacs-pi-session-thinking session))
+           (segments (emacs-pi-ui--stat-segments session))
+           (short-model (replace-regexp-in-string
+                         "[\r\n]+" " "
+                         (format "%s · %s"
+                                 (if (stringp id) id "model pending")
+                                 (if (stringp thinking) thinking
+                                   "thinking pending"))))
+           (right (if (stringp provider)
+                      (format "(%s) %s"
+                              (replace-regexp-in-string "[\r\n]+" " " provider)
+                              short-model)
+                    short-model))
+           (help (format
+                  (concat "%s\n%s\n"
+                          "Context: current usage / model window.\n"
+                          "Prompts / calls: user / assistant message counts.\n"
+                          "Tokens and cost: full-session totals reported by Pi; "
+                          "cost is a pricing estimate, not a bill.\n"
+                          "Cache: cache-read / (input + cache-read + cache-write) "
+                          "tokens, not a request hit rate.\n"
+                          "Statistics refresh when Pi settles or context changes.")
+                  (string-join segments " · ") right))
+           (width (max 1 (- (window-total-width) 2))))
+      ;; Drop low-priority metrics first; preserve context and model identity.
+      (while (and (cdr segments)
+                  (> (+ (string-width (string-join segments " · "))
+                        (string-width right) 2) width))
+        (setq segments (butlast segments)))
+      (when (> (+ (string-width (car segments)) (string-width right) 2) width)
+        (setq right short-model))
+      (let ((budget (max 0 (- width (min (string-width (car segments))
+                                         (/ width 2)) 2))))
+        (setq right (if (> budget 0)
+                        (truncate-string-to-width right budget nil nil "…") "")))
+      (let* ((budget (max 0 (- width (string-width right) 2)))
+             (left (if (> budget 0)
+                       (truncate-string-to-width
+                        (string-join segments " · ") budget nil nil "…") ""))
+             (line (concat " " (replace-regexp-in-string "%" "%%" left) " "
+                           (propertize " " 'display
+                                       `(space :align-to
+                                               (- right ,(1+ (string-width right)))))
+                           (replace-regexp-in-string "%" "%%" right))))
+        (propertize line 'help-echo help)))))
 
 (defun emacs-pi-ui--pinned ()
   "Return the latest sent user prompt for the header line."

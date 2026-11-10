@@ -16,7 +16,7 @@
   tools active-tool context-usage steering follow-up queue-known queue-attachments
   queue-rewriting
   last-prompt error history-truncated-notified
-  commands executable arguments environment on-change on-extension)
+  commands executable arguments environment on-change on-extension stats)
 
 (defcustom emacs-pi-startup-timeout 90
   "Seconds to wait for Pi's initial `get_state' response.
@@ -87,14 +87,15 @@ Large session files are fetched from a recent byte-window using Pi's
      emacs-pi-history-request-timeout)))
 
 (defun emacs-pi-session-refresh-stats (session)
-  "Refresh SESSION's current context usage from Pi."
+  "Refresh SESSION's context usage and cumulative statistics from Pi."
   (let ((generation (emacs-pi-session-generation session)))
     (emacs-pi-rpc-request
      (emacs-pi-session-connection session) "get_session_stats" nil
      (lambda (result)
        (when (and (= generation (emacs-pi-session-generation session))
                   (plist-get result :ok))
-         (setf (emacs-pi-session-context-usage session)
+         (setf (emacs-pi-session-stats session) (plist-get result :data)
+               (emacs-pi-session-context-usage session)
                (emacs-pi--jget (plist-get result :data) "contextUsage"))
          (emacs-pi-session--changed session 'status))))))
 
