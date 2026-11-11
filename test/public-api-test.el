@@ -105,6 +105,7 @@
 
 (ert-deftest emacs-pi-api-create-is-fresh-hidden-and-sends-no-prompt ()
   (let* ((directory (make-temp-file "pi-create-api-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (executable-find "python3"))
          (emacs-pi-extra-arguments nil)
          (emacs-pi--chats (make-hash-table :test #'equal))
@@ -183,6 +184,7 @@
 (ert-deftest emacs-pi-api-open-exact-session-with-fake-peer ()
   (let* ((dir (make-temp-file "pi-open-api-" t))
          (path (expand-file-name "session.jsonl" dir))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (executable-find "python3"))
          (emacs-pi-extra-arguments nil)
          (emacs-pi--chats (make-hash-table :test #'equal))
@@ -247,6 +249,7 @@
          (target (expand-file-name "new-project" dir))
          (session-directory (expand-file-name "sessions" dir))
          (path (expand-file-name "source.jsonl" dir))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (executable-find "python3"))
          (emacs-pi-extra-arguments nil)
          (emacs-pi--chats (make-hash-table :test #'equal))

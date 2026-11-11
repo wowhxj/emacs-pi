@@ -175,6 +175,7 @@
 
 (ert-deftest emacs-pi-two-chats-and-streaming-draft ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
                                                (file-name-directory
                                                 (locate-library "emacs-pi"))))
@@ -214,6 +215,7 @@
 
 (ert-deftest emacs-pi-slash-commands-and-completion ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
                                                (file-name-directory
                                                 (locate-library "emacs-pi"))))
@@ -471,6 +473,7 @@
 
 (ert-deftest emacs-pi-compact-slash-command-round-trips-rpc ()
   (let* ((root (make-temp-file "emacs-pi-compact-rpc-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
                                                (file-name-directory
                                                 (locate-library "emacs-pi"))))
@@ -571,7 +574,8 @@
           (should (= (point) (emacs-pi-input-end)))
           (let ((begin (emacs-pi-input-beginning)))
             (goto-char (point-min))
-            (emacs-pi-ui-focus-or-insert)
+            ;; Exercise the current i binding, not the removed internal name.
+            (let ((last-command-event ?i)) (call-interactively #'emacs-pi-ui-i))
             (should (= (point) (+ begin 5)))
             (should (equal (emacs-pi-input-text) "hello  "))
             (goto-char (+ begin 3))
@@ -580,7 +584,7 @@
             (goto-char (1- begin))
             (emacs-pi-ui-beginning-of-line)
             (should (= (point) begin))
-            (emacs-pi-ui-focus-or-insert)
+            (let ((last-command-event ?i)) (call-interactively #'emacs-pi-ui-i))
             (should (equal (emacs-pi-input-text) "ihello  "))
             (should (eq (overlay-get emacs-pi--input-background 'face)
                         'emacs-pi-input-face))
@@ -762,6 +766,7 @@
 
 (ert-deftest emacs-pi-sent-image-renders-and-opens-from-history ()
   (let* ((root (make-temp-file "emacs-pi-history-image-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name
                                "test/fake-pi.py"
                                (file-name-directory (locate-library "emacs-pi"))))
@@ -1052,6 +1057,7 @@
 
 (ert-deftest emacs-pi-open-uses-full-window ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
                                                (file-name-directory
                                                 (locate-library "emacs-pi"))))
@@ -1067,6 +1073,7 @@
 
 (ert-deftest emacs-pi-quit-removes-chat-buffer-and-process ()
   (let* ((root (make-temp-file "emacs-pi-test-" t))
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name "test/fake-pi.py"
                                                (file-name-directory
                                                 (locate-library "emacs-pi"))))
@@ -2042,6 +2049,7 @@
   (let* ((root (make-temp-file "emacs-pi-reference-" t))
          (file (expand-file-name "saved.jsonl" root))
          (emacs-pi-session-directory root)
+         (emacs-pi-persistent nil)
          (emacs-pi-executable (expand-file-name
                                "test/fake-pi.py"
                                (file-name-directory (locate-library "emacs-pi"))))

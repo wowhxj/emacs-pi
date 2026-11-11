@@ -1,7 +1,8 @@
 ;;; emacs-pi-session.el --- Pi chat state and RPC orchestration -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Each session owns its Pi process; the project directory is not an identity.
+;; Each session controls a Pi instance; its backend may outlive Emacs.
+;; The project directory is not an identity.
 
 ;;; Code:
 
@@ -16,7 +17,8 @@
   tools active-tool context-usage steering follow-up queue-known queue-attachments
   queue-rewriting
   last-prompt error history-truncated-notified
-  commands executable arguments environment on-change on-extension stats)
+  commands executable arguments environment on-change on-extension stats
+  runtime-state runtime-questions runtime-target)
 
 (defcustom emacs-pi-startup-timeout 90
   "Seconds to wait for Pi's initial `get_state' response.
@@ -132,7 +134,9 @@ Large session files are fetched from a recent byte-window using Pi's
 
 (defun emacs-pi-session--start (session)
   "Start or restart the Pi process for SESSION."
-  (let* ((generation (emacs-pi-session-generation session))
+  (let* ((emacs-pi-runtime-attach-target (emacs-pi-session-runtime-target session))
+         (emacs-pi-persistent (if emacs-pi-runtime-attach-target t emacs-pi-persistent))
+         (generation (emacs-pi-session-generation session))
          (args (append (list (emacs-pi-session-executable session) "--mode" "rpc")
                        (when (emacs-pi-session-session-file session)
                          (list "--session" (emacs-pi-session-session-file session)))
@@ -145,12 +149,15 @@ Large session files are fetched from a recent byte-window using Pi's
                     (emacs-pi-session-handle-event session event)))
                 (lambda (_connection reason)
                   (when (= generation (emacs-pi-session-generation session))
-                    (setf (emacs-pi-session-phase session) 'dead
-                          (emacs-pi-session-running session) nil
-                          (emacs-pi-session-error session) (plist-get reason :message))
+                    (unless (memq (emacs-pi-session-phase session) '(finished detached))
+                      (setf (emacs-pi-session-phase session)
+                            (if (eq (emacs-pi-session-phase session) 'stopping) 'unknown 'dead)
+                            (emacs-pi-session-running session) nil
+                            (emacs-pi-session-error session) (plist-get reason :message)))
                     (emacs-pi-session--changed session 'status)))
                 (emacs-pi-session-environment session))))
     (setf (emacs-pi-session-connection session) conn
+          (emacs-pi-session-runtime-questions session) (make-hash-table :test #'equal)
           (emacs-pi-session-phase session) 'syncing)
     (emacs-pi-session--changed session 'status)
     (emacs-pi-rpc-request
@@ -204,7 +211,8 @@ Large session files are fetched from a recent byte-window using Pi's
   (let ((session
          (make-emacs-pi-session
           :client-id (emacs-pi--uuid) :generation 1
-          :root (emacs-pi--local-root root) :phase 'starting
+          :root (if emacs-pi-runtime-attach-target (file-name-as-directory (expand-file-name root)) (emacs-pi--local-root root)) :phase 'starting
+           :runtime-target emacs-pi-runtime-attach-target
           :messages nil :tools (make-hash-table :test #'equal)
           :queue-attachments (make-hash-table :test #'equal)
           :executable executable :arguments arguments
@@ -214,10 +222,46 @@ Large session files are fetched from a recent byte-window using Pi's
                                   (emacs-pi-session--start session))))
     session))
 
+(defconst emacs-pi-session--recovery-warning
+  "Bridge recovery incomplete: queue/question context exceeded its budget. No automatic approval or cancellation; verify context before continuing.")
+
+(defun emacs-pi-session--runtime-warning (session event)
+  "Apply an explicit bounded-recovery warning from EVENT to SESSION."
+  (if (emacs-pi--jtrue-p (emacs-pi--jget event "recoveryIncomplete"))
+      (progn
+        (setf (emacs-pi-session-error session) emacs-pi-session--recovery-warning)
+        (when (emacs-pi--jtrue-p (emacs-pi--jget event "queueIncomplete"))
+          (setf (emacs-pi-session-queue-known session) nil)))
+    (when (and (equal (emacs-pi--jget event "type") "emacs_pi_bridge_state")
+               (equal (emacs-pi-session-error session) emacs-pi-session--recovery-warning))
+      (setf (emacs-pi-session-error session) nil))))
+
 (defun emacs-pi-session-handle-event (session event)
   "Apply Pi EVENT to SESSION and inform its observer."
   (let ((type (emacs-pi--jget event "type")))
     (pcase type
+      ("emacs_pi_bridge_state"
+       (setf (emacs-pi-session-runtime-state session) event
+             (emacs-pi-session-active-message session)
+             (let ((text (emacs-pi--jget event "activeText")))
+               (and (stringp text) (not (string-empty-p text))
+                    (concat (when (emacs-pi--jtrue-p
+                                   (emacs-pi--jget event "activeTextTruncated"))
+                              "[Earlier live preview omitted; full message available after completion]\n")
+                            text)))
+             (emacs-pi-session-active-tool session)
+             (let ((tool (emacs-pi--jget event "activeTool"))) (and (stringp tool) tool)))
+       (when (hash-table-p (emacs-pi--jget event "queue"))
+         (emacs-pi-session-handle-event session (emacs-pi--jget event "queue")))
+       (dolist (question (emacs-pi--array-list (emacs-pi--jget event "questions")))
+         (emacs-pi-session-handle-event session question))
+       (emacs-pi-session--runtime-warning session event)
+       (emacs-pi-session--changed session 'stream))
+      ("emacs_pi_bridge_recovery_warning"
+       (emacs-pi-session--runtime-warning session event)
+       (emacs-pi-session--changed session 'status))
+      ("emacs_pi_bridge_resync"
+       (emacs-pi-session-refresh-state session))
       ("agent_start"
        (setf (emacs-pi-session-running session) t
              (emacs-pi-session-error session) nil)
@@ -225,7 +269,8 @@ Large session files are fetched from a recent byte-window using Pi's
       ("agent_settled"
        (setf (emacs-pi-session-running session) nil
              (emacs-pi-session-compacting session) nil
-             (emacs-pi-session-active-tool session) nil)
+             (emacs-pi-session-active-tool session) nil
+             (emacs-pi-session-runtime-questions session) (make-hash-table :test #'equal))
        (emacs-pi-session--changed session 'status)
        (emacs-pi-session--refresh-history session)
        (emacs-pi-session-refresh-stats session))
@@ -293,8 +338,14 @@ Large session files are fetched from a recent byte-window using Pi's
        (setf (emacs-pi-session-name session) (emacs-pi--jget event "name"))
        (emacs-pi-session--changed session 'status))
       ("extension_ui_request"
-       (when (emacs-pi-session-on-extension session)
-         (funcall (emacs-pi-session-on-extension session) session event)))
+       (let* ((id (emacs-pi--jget event "id"))
+              (known (or (emacs-pi-session-runtime-questions session)
+                         (setf (emacs-pi-session-runtime-questions session)
+                               (make-hash-table :test #'equal)))))
+         (unless (and id (gethash id known))
+           (when id (puthash id t known))
+           (when (emacs-pi-session-on-extension session)
+             (funcall (emacs-pi-session-on-extension session) session event)))))
       (_ nil))))
 
 (defun emacs-pi-session-compact (session instructions callback)
@@ -441,13 +492,47 @@ DISPLAY-TEXT is the compact prompt shown in the header."
         (emacs-pi-session-error session) nil)
   (emacs-pi-session--start session))
 
-(defun emacs-pi-session-shutdown (session)
-  "Stop SESSION's Pi process."
+(defun emacs-pi-session-detach (session)
+  "Detach SESSION's UI transport without ending a persistent Pi instance."
+  (setf (emacs-pi-session-generation session)
+        (1+ (or (emacs-pi-session-generation session) 0)))
   (when-let* ((connection (emacs-pi-session-connection session)))
     (emacs-pi-rpc-close connection))
-  (setf (emacs-pi-session-phase session) 'dead
-        (emacs-pi-session-running session) nil)
+  (if (and (emacs-pi-session-connection session)
+           (emacs-pi-rpc-persistent (emacs-pi-session-connection session)))
+      (setf (emacs-pi-session-phase session) 'detached)
+    (setf (emacs-pi-session-phase session) 'dead
+          (emacs-pi-session-running session) nil))
   (emacs-pi-session--changed session 'status))
+
+(defun emacs-pi-session-shutdown (session &optional callback)
+  "Explicitly finish SESSION, then call CALLBACK with the result.
+A persistent instance remains stopping/unknown until its actual exit is
+confirmed.  Ordinary buffer cleanup must use `emacs-pi-session-detach'."
+  (let ((connection (emacs-pi-session-connection session))
+        (generation (emacs-pi-session-generation session)))
+    (if (and connection (emacs-pi-rpc-persistent connection))
+        (progn
+          (setf (emacs-pi-session-phase session) 'stopping)
+          (emacs-pi-session--changed session 'status)
+          (emacs-pi-rpc-request
+           connection "emacs_pi_finish" nil
+           (lambda (result)
+             (when (= generation (emacs-pi-session-generation session))
+               (setf (emacs-pi-session-phase session)
+                     (if (plist-get result :ok) 'finished 'unknown)
+                     (emacs-pi-session-error session)
+                     (unless (plist-get result :ok) (plist-get result :message)))
+               (when (plist-get result :ok)
+                 (setf (emacs-pi-session-running session) nil))
+               (emacs-pi-session--changed session 'status)
+               (when callback (funcall callback result))))
+           15))
+      (when connection (emacs-pi-rpc-close connection))
+      (setf (emacs-pi-session-phase session) 'dead
+            (emacs-pi-session-running session) nil)
+      (emacs-pi-session--changed session 'status)
+      (when callback (funcall callback '(:ok t))))))
 
 (provide 'emacs-pi-session)
 ;;; emacs-pi-session.el ends here

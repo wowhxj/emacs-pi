@@ -1,5 +1,91 @@
 # Public session APIs (development)
 
+## Inspect persistent runtime ownership without starting Pi
+
+```elisp
+(setq cancel-runtime
+      (emacs-pi-inspect-runtimes
+       (lambda (instances) (message "%S" instances))
+       :on-error (lambda (diagnostic) (message "%s" diagnostic))))
+```
+
+This asynchronous, cancellable API queries only `emacs-pi-runtime-directory`.
+It neither creates the registry nor starts Pi, attaches a UI, takes its writer
+lease, sends RPC commands, or changes a session. It works while another client
+holds the controller. Cancelling terminates only the inventory query process.
+
+Each plist contains `:instance`, `:generation`, `:status`, `:activity`,
+`:sessionFile`, `:sessionDirectory`, `:sessionId`, `:cwd`, `:hasController`, and
+`:persistent`. Status strings are `starting`, `running`, `stopping`, `finished`,
+`exited`, `failed`, or `unknown`. The directory is the explicit `--session-dir`
+when provided; otherwise it may be nil. Historical bridge versions can lack
+controller/directory metadata. Missing controller information is nil/unknown,
+not evidence that a writer lease is available. IDs/paths can be unknown for a
+fresh or incompletely recorded instance.
+
+**Process presence is not model activity.** Live instances deliberately report
+`:activity "unknown"`, never idle; confirmed ended instances report `"stopped"`.
+No prompt, response, extension question, raw error, argv, environment or token
+is returned. Inventory is bounded; malformed/incomplete owner records remain
+`unknown`, not absent. Empty inventory means no records in this registry only;
+it says nothing about legacy/external Pi processes or a different registry.
+Consumers must bind caches to the queried configuration and reject stale
+results; a completed query is a point-in-time observation, not a writer lease.
+
+## Bridge recovery and pressure boundaries (development)
+
+The bundled Node owner validates private state version, authentication material,
+working-directory/file types and recorded PID fields before reusing or replacing
+an instance. An ended status alone never authorizes replacement: both recorded
+PIDs must be proven absent. EPERM/invalid/missing PID facts remain possibly-live.
+A live unindexed or malformed owner can conservatively block historical restore
+in the registry. Concurrent cold ensures share one generation; ended restores
+use an exclusive launch claim, so competing callers may receive a retry error.
+
+At the Node transport boundary, an already-owned canonical file can reconnect
+even after the history/project path disappears: missing suffixes are resolved
+against the nearest existing canonical ancestor. Dangling symlinks are rejected,
+not guessed. No replacement is launched while those required resources are
+missing. `emacs-pi-open-session` and Hub now perform owner discovery first and
+use a strict attach-only transport pinned to instance/generation/file/ID. This
+transport has no launch fallback and does not need the original executable or
+cwd to exist. An isolated Hub/native probe deletes history, cwd and executable,
+reattaches the same generation, finishes it, then confirms another open cannot
+replace it with those resources absent. Unresolved symlinks remain unknown.
+
+JSONL parsing splits only at LF (including split UTF-8/CRLF), and after one
+malformed record reports one terminal failure rather than executing later
+ambiguous records. Partial input remains capped at 64 MiB. IPC and Pi stdin
+admission permits one encoded frame up to 64 MiB plus at most 8 MiB of
+smaller pending writes. A second large frame before drain is refused, never
+retried. This preserves large input/history/snapshot support while bounding
+backpressure. A slow controller can be disconnected
+without replacing/pausing the owner; stdout continues to drain. Replay/active
+preview remain bounded at 4 MiB with explicit preview truncation. A large frame
+rejected at transport is not retried; history resynchronization may be needed.
+
+There are at most 256 outstanding requests awaiting responses and 100/8 MiB pre-ready
+proxy commands; oversized RPC identities are rejected. In-flight duplicate IDs
+remain reserved across detach. None of these limits authorize prompt replay or
+imply delivery certainty after a disconnect.
+
+The retained queue plus unanswered-question aggregate is capped at 16 MiB and
+256 questions (separate from the 4 MiB live-text preview). On overflow, the owner
+continues draining and keeps Pi alive. It does not approve, answer, cancel or
+retry work. Snapshots carry `recoveryIncomplete`, `queueIncomplete` and
+`questionsIncomplete`; the Emacs UI displays an explicit warning and never uses
+an incomplete queue as a known-empty queue. Replies to question IDs whose full
+context was not retained are refused. Previously retained questions stay intact.
+Full recovery beyond this supported budget is **not guaranteed**: inspect the
+warning and explicitly finish/recover rather than approving unseen context.
+Question uncertainty stays marked until native settlement; a fresh valid queue
+update can restore its queue projection. These overflow negatives are controlled
+RPC tests, not proof of live approval-provider behavior.
+
+The native history picker now also uses the public owner-first open path rather
+than rejecting a vanished cwd before discovery. Remaining fork/alias/reload edge
+cases and live-provider model/approval workflows still require final acceptance.
+
 ## Enumerate without starting Pi
 
 ```elisp
@@ -91,22 +177,29 @@ promise to stop an already launched client.
  :on-error (lambda (error) (message "%s" error)))
 ```
 
-Returns a buffer immediately, not proof of readiness. Ready follows an
-RPC `get_state` response whose exact ID and canonical file match the
+Persistent opens now discover ownership asynchronously: consume the buffer
+from `:on-ready`, not the immediate return (a discovery cancellation function).
+Legacy nonpersistent opens can still return a buffer immediately. Cancellation
+only suppresses discovery before handoff, not an already-started UI handshake.
+Ready follows an RPC `get_state` response whose exact ID and canonical file match the
 selected header/file. No prompt is sent. A terminal callback runs at most
 once; restoration and verification have bounded timeouts. `display` is
 `current`, `none`, or a standard `display-buffer` action; the new API does
 not delete other windows. Existing interactive commands keep their
 sole-window defaults. `session-directory` is a per-call storage override.
-Missing or remote project directories are rejected. Existing same-file
-buffers in another root are rejected; dead sessions can restart in place.
+Historical recovery requires an existing local project directory; authenticated
+existing-owner attach does not. Existing same-file buffers in another root are
+rejected; dead sessions can restart in place.
 Starting sessions are waited for rather than duplicated.
 
 Limitations: `emacs-pi-open-session` verifies file/ID but the Pi state
 response does not report authoritative execution cwd. The fork API below
 also verifies the new header metadata, not runtime cwd. Do not interpret
 `default-directory` or a header alone as runtime evidence. Cancellation of
-open requests and generation-race hardening are not yet implemented.
+an open after discovery handoff is not implemented. Attach is generation-pinned
+and rejects lost/changed owners rather than falling back to historical startup.
+Hub uses optional `:expected-id` to bind its selection; `:on-missing` is called
+only after a successful no-owner observation, never on inspection uncertainty.
 
 ## Fork a session file into a new project directory
 
@@ -137,6 +230,6 @@ calls it with the chat root; a returned file path replaces `@NAME` with an
 部分失败通过 diagnostics 返回；首条非文本用户输入不会被后面的
 文本覆盖，最近交互时间不使用文件修改时间。现有同步历史调用继续可用。
 
-恢复默认不关闭其他窗口，先返回 buffer，再通过 on-ready 确认 RPC
+恢复默认不关闭其他窗口；持久模式异步查 owner，从 on-ready 获取 buffer，确认 RPC
 返回的会话文件及 ID。真实 Pi 恢复、执行目录和代次竞态仍需补充验证，
 尚不能视为整个 Hub 方案已经验收。不得自动发送消息验证恢复。

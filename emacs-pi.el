@@ -138,10 +138,10 @@ passed to `display-buffer' as an action."
   "Open a new chat at ROOT, optionally restoring SESSION-FILE.
 STARTUP-ARGUMENTS are appended to the Pi command line."
   (emacs-pi--check-arguments)
-  (unless (or (file-executable-p emacs-pi-executable)
+  (unless (or emacs-pi-runtime-attach-target (file-executable-p emacs-pi-executable)
               (executable-find emacs-pi-executable))
     (user-error "Pi executable not found; set emacs-pi-executable"))
-  (let* ((root (emacs-pi--local-root root))
+  (let* ((root (if emacs-pi-runtime-attach-target (file-name-as-directory (expand-file-name root)) (emacs-pi--local-root root)))
          (args (append (when emacs-pi-session-directory
                          (list "--session-dir"
                                (expand-file-name emacs-pi-session-directory)))
@@ -160,45 +160,81 @@ STARTUP-ARGUMENTS are appended to the Pi command line."
 
 ;;;###autoload
 (cl-defun emacs-pi-open-session
+    (session-file &key directory session-directory (display 'current) on-ready on-error on-missing expected-id)
+  "Open SESSION-FILE with asynchronous owner-first persistent discovery.
+Use ON-READY, not the immediate return.  Unknown/failed attach never launches."
+  (unless (and (stringp session-file) (not (file-remote-p session-file)))
+    (user-error "A local Pi session path is required"))
+  (let ((path (file-truename session-file)) (runtime (expand-file-name emacs-pi-runtime-directory)))
+    (cl-labels ((failed (_error)
+                  (if on-error (funcall on-error "Pi owner could not be verified; no replacement was started")
+                    (message "Pi owner could not be verified; no replacement was started")))
+                (open (target)
+                  (condition-case error
+                      (emacs-pi--open-session-file path :directory directory :session-directory session-directory
+                                                   :display display :on-ready on-ready :on-error on-error :runtime-target target :expected-id expected-id)
+                    (error (if on-error (funcall on-error (error-message-string error))
+                             (message "emacs-pi: %s" (error-message-string error)))))))
+      (if (not emacs-pi-persistent) (if on-missing (funcall on-missing) (open nil))
+        (emacs-pi-inspect-runtimes
+         (lambda (rows)
+           (if (not (and emacs-pi-persistent (equal runtime (expand-file-name emacs-pi-runtime-directory)))) (failed nil)
+             (let* ((live (seq-filter (lambda (row) (not (member (plist-get row :status) '("finished" "exited" "failed")))) rows))
+                    (matches (seq-filter (lambda (row) (equal path (plist-get row :sessionFile))) live)))
+               (cond
+                ((and (= (length matches) 1) (equal (plist-get (car matches) :status) "running")
+                      (stringp (plist-get (car matches) :sessionId)) (stringp (plist-get (car matches) :cwd))
+                      (or (not expected-id) (equal expected-id (plist-get (car matches) :sessionId)))) (open (car matches)))
+                ((or matches (seq-some (lambda (row) (or (equal (plist-get row :status) "unknown")
+                                                        (not (plist-get row :sessionFile)))) live)) (failed nil))
+                (t (if on-missing (funcall on-missing) (open nil))))))) :on-error #'failed)))))
+
+(cl-defun emacs-pi--open-session-file
     (session-file &key directory session-directory (display 'current)
-                  on-ready on-error)
+                  on-ready on-error runtime-target expected-id)
   "Restore SESSION-FILE without a picker or window deletion.
 DIRECTORY overrides the recorded working directory.  SESSION-DIRECTORY
 is a per-call storage override.  DISPLAY is `current', `none', or a
 `display-buffer' action.  Return the chat buffer immediately; ON-READY
 receives it only after RPC verifies the exact file and ID.  ON-ERROR
 receives a diagnostic string.  A terminal callback runs at most once."
-  (unless (and (stringp session-file) (not (file-remote-p session-file))
-               (file-regular-p session-file))
+  (unless (or runtime-target (and (stringp session-file) (not (file-remote-p session-file))
+                                 (file-regular-p session-file)))
     (user-error "An existing local Pi session file is required"))
-  (let* ((path (file-truename session-file))
-         (header (with-temp-buffer
+  (let* ((emacs-pi-runtime-attach-target runtime-target)
+         (path (file-truename session-file))
+         (header (if runtime-target
+                     (emacs-pi--jobject "type" "session" "id" (plist-get runtime-target :sessionId) "cwd" (plist-get runtime-target :cwd))
+                   (with-temp-buffer
                    (insert-file-contents path nil 0 65536)
                    (goto-char (point-min))
                    (emacs-pi--jparse
                     (buffer-substring-no-properties
-                     (point-min) (line-end-position)))))
+                     (point-min) (line-end-position))))))
          (id (emacs-pi--jget header "id"))
          (root (or directory (emacs-pi--jget header "cwd")))
          existing)
+    (when (and expected-id (not (equal expected-id id))) (user-error "Pi session ID differs from selection"))
     (unless (and (equal (emacs-pi--jget header "type") "session")
                  (stringp id) (stringp root) (not (file-remote-p root))
-                 (file-directory-p root))
+                 (or runtime-target (file-directory-p root)))
       (user-error "Invalid Pi session header or project directory"))
-    (setq root (emacs-pi--local-root root))
+    (when (and runtime-target directory
+               (not (equal (directory-file-name (file-truename directory)) (directory-file-name (plist-get runtime-target :cwd)))))
+      (user-error "Existing Pi owner belongs to another directory"))
+    (setq root (if runtime-target (file-name-as-directory (expand-file-name root)) (emacs-pi--local-root root)))
     (maphash
      (lambda (_key buffer)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
            (let ((file (and emacs-pi--session
                             (emacs-pi-session-session-file emacs-pi--session))))
-             (when (and (stringp file) (file-exists-p file)
-                        (file-equal-p file path))
+             (when (and (stringp file) (equal (file-truename file) path))
                (setq existing buffer))))))
      emacs-pi--chats)
     (when existing
       (with-current-buffer existing
-        (unless (equal root (emacs-pi-session-root emacs-pi--session))
+        (unless (equal (directory-file-name (file-truename root)) (directory-file-name (file-truename (emacs-pi-session-root emacs-pi--session))))
           (user-error "Pi session is already open in another directory"))))
     (let* ((emacs-pi-session-directory
             (or session-directory emacs-pi-session-directory))
@@ -212,8 +248,9 @@ receives a diagnostic string.  A terminal callback runs at most once."
       (when existing
         (let* ((connection (emacs-pi-session-connection session))
                (process (and connection (emacs-pi-rpc-process connection))))
-          (when (and (eq (emacs-pi-session-phase session) 'dead)
+          (when (and (memq (emacs-pi-session-phase session) '(dead detached finished))
                      (not (and process (process-live-p process))))
+            (setf (emacs-pi-session-runtime-target session) runtime-target)
             (emacs-pi-session-restart session)
             (setf (emacs-pi-session-error session) nil))))
       (setq generation (emacs-pi-session-generation session))
@@ -256,8 +293,10 @@ receives a diagnostic string.  A terminal callback runs at most once."
                                       (buffer-live-p buffer)
                                       (plist-get result :ok)
                                       (equal id (emacs-pi--jget state "sessionId"))
-                                      (stringp file) (file-exists-p file)
-                                      (file-equal-p path file))
+                                      (stringp file) (equal path (file-truename file))
+                                      (or (not runtime-target)
+                                          (equal (plist-get runtime-target :generation)
+                                                 (emacs-pi--jget (emacs-pi-session-runtime-state session) "generation"))))
                            "Pi restored a different or unverifiable session")))))))))))
         (setq timer (run-at-time 0.01 0.05 #'check)))
       buffer)))
@@ -496,25 +535,9 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
              preview-width nil nil "…"))))
 
 (defun emacs-pi--resume-record (record)
-  "Open RECORD, switching to a live chat when already open."
-  (let* ((path (file-truename (plist-get record :path)))
-         (cwd (plist-get record :cwd))
-         (existing nil))
-    (unless (file-directory-p cwd)
-      (user-error "Pi session project directory no longer exists: %s" cwd))
-    (maphash
-     (lambda (_id buffer)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (when-let* ((session-file
-                        (and emacs-pi--session
-                             (emacs-pi-session-session-file emacs-pi--session))))
-             (when (and (file-exists-p session-file)
-                        (file-equal-p session-file path))
-               (setq existing buffer))))))
-     emacs-pi--chats)
-    (if existing (emacs-pi--show-chat existing)
-      (emacs-pi--open cwd path))))
+  "Open RECORD through owner-first discovery, before checking its old cwd."
+  (emacs-pi-open-session (plist-get record :path) :directory (plist-get record :cwd)
+                         :expected-id (plist-get record :id) :display 'current))
 
 (defun emacs-pi--pick-session (records &optional new-root)
   "Choose from RECORDS; offer a new session in NEW-ROOT when supplied."
@@ -595,7 +618,8 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
                 (or (plist-get result :message) "failed"))))))
 
 (defun emacs-pi-restart ()
-  "Restart this chat's Pi process and reload its session."
+  "Reconnect this chat and reload its session without resending work.
+Persistent Pi keeps running; legacy mode restarts its direct subprocess."
   (interactive)
   (emacs-pi-session-restart (emacs-pi--require-session)))
 
@@ -606,20 +630,60 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
     (unless (and (eq (emacs-pi-session-phase session) 'ready)
                  (not (emacs-pi-session-running session)))
       (user-error "Wait for Pi to become idle before /reload"))
-    (emacs-pi-session-restart session)))
+    (if (and (emacs-pi-session-connection session)
+             (emacs-pi-rpc-persistent (emacs-pi-session-connection session)))
+        (emacs-pi-session-shutdown
+         session
+         (lambda (result)
+           (if (plist-get result :ok)
+               (progn
+                 (setf (emacs-pi-session-runtime-target session) nil)
+                 (run-at-time 0.15 nil #'emacs-pi-session-restart session))
+             (message "Pi reload not performed: %s" (plist-get result :message)))))
+      (emacs-pi-session-restart session))))
 
 (defun emacs-pi-shutdown ()
-  "Shut down the Pi process while leaving the transcript visible."
+  "Explicitly end this Pi instance, retaining history and visible transcript."
   (interactive)
-  (emacs-pi-session-shutdown (emacs-pi--require-session)))
+  (let ((session (emacs-pi--require-session)))
+    (when (and (called-interactively-p 'interactive)
+               (or (emacs-pi-session-running session)
+                   (emacs-pi-session-compacting session)
+                   (emacs-pi-session-steering session)
+                   (emacs-pi-session-follow-up session))
+               (not (yes-or-no-p "End this Pi instance and discard queued work? ")))
+      (user-error "Pi instance retained"))
+    (emacs-pi-session-shutdown
+     session (lambda (result)
+               (message "Pi finish: %s"
+                        (if (plist-get result :ok) "ended (history retained)"
+                          (or (plist-get result :message) "outcome unknown")))))))
 
 (defun emacs-pi-quit ()
-  "Close this chat, stopping its Pi process and killing its buffer."
+  "Finish this Pi instance, retaining history; close the buffer after success.
+Ordinary kill-buffer only detaches a persistent connection."
   (interactive)
-  (when (emacs-pi-session-queue-rewriting
-         (emacs-pi--require-session))
-    (user-error "Pi queue is being rewritten; wait for it to finish"))
-  (kill-buffer (current-buffer)))
+  (let* ((session (emacs-pi--require-session))
+         (buffer (current-buffer))
+         (connection (emacs-pi-session-connection session)))
+    (when (emacs-pi-session-queue-rewriting session)
+      (user-error "Pi queue is being rewritten; wait for it to finish"))
+    (when (and (called-interactively-p 'interactive)
+               (or (emacs-pi-session-running session)
+                   (emacs-pi-session-compacting session)
+                   (emacs-pi-session-steering session)
+                   (emacs-pi-session-follow-up session))
+               (not (yes-or-no-p "End this Pi instance and discard queued work? ")))
+      (user-error "Pi instance retained"))
+    (if (and connection (emacs-pi-rpc-persistent connection))
+        (emacs-pi-session-shutdown
+         session (lambda (result)
+                   (if (plist-get result :ok)
+                       (when (buffer-live-p buffer) (kill-buffer buffer))
+                     (message "Pi not confirmed ended: %s"
+                              (or (plist-get result :message) "outcome unknown")))))
+      (emacs-pi-session-shutdown session)
+      (kill-buffer buffer))))
 
 (defun emacs-pi-help ()
   "Show commands supported by this client and chat keys."

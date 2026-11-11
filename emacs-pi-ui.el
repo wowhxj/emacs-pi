@@ -801,7 +801,8 @@ ACTIVE-P means this is the turn currently being processed by Pi."
     buffer))
 
 (defun emacs-pi-ui--cleanup ()
-  "Release this chat's registry entry, Pi process, and timers."
+  "Release this chat's registry entry, client connection, and UI timers.
+Persistent Pi instances remain alive; C-c C-q explicitly finishes them."
   (when emacs-pi--session
     (let* ((session emacs-pi--session)
            (id (emacs-pi-session-client-id session)))
@@ -815,7 +816,7 @@ ACTIVE-P means this is the turn currently being processed by Pi."
                  (eq (gethash id emacs-pi--chats) (current-buffer)))
         (remhash id emacs-pi--chats))
       (setf (emacs-pi-session-buffer session) nil)
-      (emacs-pi-session-shutdown session)))
+      (emacs-pi-session-detach session)))
   (when emacs-pi--render-timer
     (cancel-timer emacs-pi--render-timer)
     (setq emacs-pi--render-timer nil))

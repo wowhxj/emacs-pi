@@ -20,6 +20,19 @@
 - Emacs 29.1 或更新版本
 - [Pi Coding Agent](https://github.com/badlogic/pi-mono)：命令 `pi` 位于 `PATH` 中，或通过 `emacs-pi-executable` 指定路径
 - `markdown-mode` 2.3 或更新版本
+- 默认持久传输需要 Node.js **22.19+**，目前限 POSIX（macOS/Linux）。桥接仅用标准库，不需要为它执行 npm install。
+
+## 持久所有权
+
+默认关闭聊天 buffer、正常退出或杀死 Emacs 只断开 UI，Pi 后台继续运行；恢复优先连接
+已有 owner。`C-c C-q` 明确结束所属 Pi，确认退出后才关闭 UI；`emacs-pi-shutdown`
+结束 Pi 但保留可见聊天记录，历史文件不删除。所有权不确定时不会静默启动替代者。
+只有显式设置 `emacs-pi-persistent` 为 nil 才使用旧的 Emacs 托管模式，不保证后台存活。
+
+安装/复制时须将 `emacs-pi-runtime.el` 和 **`emacs-pi-bridge.mjs` 与其余 Lisp 文件放在
+一起**，只复制 `*.el` 不完整。当前工作树中的开发变更须发布后才能由远端安装取得；
+不会自动更新你已安装的包。持久模式公开恢复接口从异步 `:on-ready` 获取 buffer，
+详见 [API 与恢复边界](docs/PUBLIC-API.md)。
 
 ## 安装
 
@@ -74,7 +87,7 @@
 | 浏览输入历史 | `M-p` / `M-n` |
 | 进入复制模式 / 返回输入区（semi-char mode） | `C-c C-t` / `C-c C-j`；光标在输入区外时按 `i` 返回，输入区内则正常输入 `i` |
 | 聚焦输入区 | `C-c C-i` |
-| 关闭聊天 / 关闭其 Pi 进程 | `C-c C-q` / `M-x emacs-pi-shutdown` |
+| 结束 Pi 并关闭 UI / 结束 Pi 但保留 UI | `C-c C-q` / `M-x emacs-pi-shutdown` |
 
 ## 配置
 

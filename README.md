@@ -21,6 +21,24 @@ A native Emacs chat interface for [Pi Coding Agent](https://github.com/badlogic/
 - Emacs 29.1 or later
 - [Pi Coding Agent](https://github.com/badlogic/pi-mono), available as `pi` on `PATH` or configured with `emacs-pi-executable`
 - `markdown-mode` 2.3 or later
+- Node.js **22.19+** for the default persistent transport; currently POSIX (macOS/Linux).
+  The bundled bridge uses Node's standard library; no bridge npm install is needed.
+
+## Persistent ownership
+
+By default, closing a chat buffer or exiting/killing Emacs detaches its UI; Pi
+continues independently. Reopening uses the existing owner first. `C-c C-q`
+explicitly finishes that Pi instance and closes the UI only after confirmed
+exit; `emacs-pi-shutdown` keeps the transcript UI. History is retained. Unknown
+ownership never silently starts a replacement. Set `emacs-pi-persistent` to nil
+only for the explicit legacy Emacs-owned mode (no persistence guarantee).
+
+Keep `emacs-pi-runtime.el` and **`emacs-pi-bridge.mjs` beside the other Lisp
+files** when installing/copying the package. Copying only `*.el` is incomplete.
+The source tree contains development changes that must be published before a
+remote package install can include them; this work does not update your installed
+package automatically. Public persistent opens now use asynchronous `:on-ready`;
+see [the API and recovery limits](docs/PUBLIC-API.md).
 
 ## Installation
 
@@ -75,7 +93,7 @@ Narrow windows hide optional metrics first; hover over the line for the full sum
 | Browse prompt history | `M-p` / `M-n` |
 | Enter copy mode / return to input (semi-char mode) | `C-c C-t` / `C-c C-j`; press `i` outside the composer to return, or type `i` inside it |
 | Focus the input area | `C-c C-i` |
-| Close the chat / shut down its Pi process | `C-c C-q` / `M-x emacs-pi-shutdown` |
+| Finish Pi and close UI / finish Pi but retain UI | `C-c C-q` / `M-x emacs-pi-shutdown` |
 
 ## Configuration
 

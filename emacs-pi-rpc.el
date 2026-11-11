@@ -7,10 +7,11 @@
 
 (require 'cl-lib)
 (require 'emacs-pi-core)
+(require 'emacs-pi-runtime)
 
 (cl-defstruct emacs-pi-rpc
   id generation process stderr-buffer receive-buffer pending counter
-  on-event on-exit status close-timer)
+  on-event on-exit status close-timer persistent)
 
 (cl-defstruct emacs-pi-rpc-pending command callback timer)
 
@@ -132,14 +133,18 @@ is an optional complete process environment list."
                              :receive-buffer (generate-new-buffer " *emacs-pi-receive*")
                              :pending (make-hash-table :test #'equal)
                              :counter 0 :status 'starting
+                             :persistent emacs-pi-persistent
                              :on-event on-event :on-exit on-exit))
-         (default-directory root)
+         (default-directory (if emacs-pi-runtime-attach-target temporary-file-directory root))
          (process-environment (or environment process-environment)))
     (condition-case err
         (setf (emacs-pi-rpc-process connection)
               (make-process
                :name (format "emacs-pi-%s" (substring id 0 (min 8 (length id))))
-               :command argv :connection-type 'pipe :coding 'utf-8-unix
+               :command (if emacs-pi-persistent
+                            (emacs-pi-runtime-command id root argv)
+                          argv)
+               :connection-type 'pipe :coding 'utf-8-unix
                :noquery t :stderr (emacs-pi-rpc-stderr-buffer connection)
                :filter (lambda (_process chunk)
                          (emacs-pi-rpc--filter connection chunk))
@@ -193,7 +198,9 @@ Return request ID or nil when no live process exists."
                          (concat (emacs-pi--jencode object) "\n"))))
 
 (defun emacs-pi-rpc-close (connection)
-  "Close CONNECTION, settling outstanding requests."
+  "Close CONNECTION, settling outstanding requests.
+For a persistent connection this closes only the local proxy, not Pi.
+Use `emacs-pi-session-shutdown' for an explicit backend finish."
   (unless (memq (emacs-pi-rpc-status connection) '(dead closing))
     (setf (emacs-pi-rpc-status connection) 'closing)
     (if (process-live-p (emacs-pi-rpc-process connection))
