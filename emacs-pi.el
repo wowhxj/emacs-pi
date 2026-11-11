@@ -510,8 +510,9 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
               "…"
               (truncate-string-to-width value total (- total tail))))))
 
-(defun emacs-pi--session-label (record)
-  "Format RECORD as date, ID, workspace, and prompt preview."
+(defun emacs-pi--session-label (record &optional live)
+  "Format RECORD as date, ID, workspace, and prompt preview.
+Mark it when it is among LIVE, from `emacs-pi-runtime-live-sessions'."
   (let* ((date (format-time-string "%Y-%m-%d %H:%M"
                                    (plist-get record :modified)))
          (id (plist-get record :id))
@@ -532,7 +533,8 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
                    (emacs-pi--middle-truncate cwd 34) 34) "  "
             (truncate-string-to-width
              (replace-regexp-in-string "[[:space:]\n\r]+" " " preview)
-             preview-width nil nil "…"))))
+             preview-width nil nil "…")
+            (emacs-pi-runtime-running-mark record live))))
 
 (defun emacs-pi--resume-record (record)
   "Open RECORD through owner-first discovery, before checking its old cwd."
@@ -541,8 +543,9 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
 
 (defun emacs-pi--pick-session (records &optional new-root)
   "Choose from RECORDS; offer a new session in NEW-ROOT when supplied."
-  (let* ((choices (mapcar (lambda (record)
-                            (cons (emacs-pi--session-label record) record))
+  (let* ((live (emacs-pi-runtime-live-sessions))
+         (choices (mapcar (lambda (record)
+                            (cons (emacs-pi--session-label record live) record))
                           records))
          (choices (if new-root
                       (append choices '(("[New session]" . :new)))

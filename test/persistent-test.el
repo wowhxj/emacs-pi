@@ -206,4 +206,28 @@
       (should (equal (plist-get (cdr selected) :directory) "/missing/project")))))
 
 (provide 'persistent-test)
+(ert-deftest emacs-pi-persistent-running-mark ()
+  "Pickers mark sessions whose persistent Pi is still alive."
+  (let* ((root (make-temp-file "emacs-pi-live" t))
+         (emacs-pi-runtime-directory root))
+    (unwind-protect
+        (cl-flet ((state (name status pid id file)
+                    (make-directory (expand-file-name name root))
+                    (with-temp-file (expand-file-name (concat name "/state.json") root)
+                      (insert (emacs-pi--jencode
+                               (emacs-pi--jobject "status" status "piPid" pid
+                                                  "sessionId" id "sessionFile" file))))))
+          (state "a" "running" (emacs-pid) "live-id" :null)
+          (state "b" "finished" (emacs-pid) "done-id" :null)
+          (state "c" "running" 999999999 "dead-id" :null)
+          (state "d" "running" (emacs-pid) :null (file-truename root))
+          (let ((live (emacs-pi-runtime-live-sessions)))
+            (should (string-search "running"
+                                   (emacs-pi-runtime-running-mark '(:id "live-id") live)))
+            (should (string-search "running"
+                                   (emacs-pi-runtime-running-mark (list :id "x" :path root) live)))
+            (should (equal "" (emacs-pi-runtime-running-mark '(:id "done-id") live)))
+            (should (equal "" (emacs-pi-runtime-running-mark '(:id "dead-id") live)))))
+      (delete-directory root t))))
+
 ;;; persistent-test.el ends here

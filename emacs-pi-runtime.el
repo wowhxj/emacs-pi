@@ -84,6 +84,34 @@ A --session file, not the project directory, identifies an existing session."
           (base64-encode-string
            (encode-coding-string (emacs-pi--jencode config) 'utf-8-unix) t)))))
 
+(defun emacs-pi-runtime-live-sessions ()
+  "Return session IDs and files of persistent Pi runtimes still running.
+Reads the registry's state files directly, without Node or a controller,
+so session pickers can mark sessions that keep running in the background."
+  ;; ponytail: trusts the recorded Pi pid; a recycled pid would look alive.
+  (let (live)
+    (dolist (file (file-expand-wildcards
+                   (expand-file-name "*/state.json" emacs-pi-runtime-directory)))
+      (when-let* ((state (ignore-errors
+                           (with-temp-buffer
+                             (insert-file-contents file)
+                             (json-parse-buffer :object-type 'hash-table
+                                                :null-object nil :false-object nil))))
+                  (pid (gethash "piPid" state)))
+        (when (and (member (gethash "status" state) '("starting" "running" "stopping"))
+                   (integerp pid) (eq 0 (ignore-errors (signal-process pid 0))))
+          (dolist (key '("sessionId" "sessionFile"))
+            (when (stringp (gethash key state)) (push (gethash key state) live))))))
+    live))
+
+(defun emacs-pi-runtime-running-mark (record live)
+  "Return a running marker when history RECORD is among LIVE sessions."
+  (if (or (member (plist-get record :id) live)
+          (and (plist-get record :path)
+               (member (file-truename (plist-get record :path)) live)))
+      (propertize " ● running" 'face 'success)
+    ""))
+
 ;;;###autoload
 (cl-defun emacs-pi-inspect-runtimes (on-success &key on-error)
   "Inspect this registry without starting Pi or acquiring a controller.

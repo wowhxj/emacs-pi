@@ -11,6 +11,7 @@
 (require 'project)
 (require 'emacs-pi-core)
 (require 'emacs-pi-history)
+(require 'emacs-pi-runtime)
 (require 'emacs-pi-ui)
 
 (declare-function emacs-pi-ui--image-preview-string "emacs-pi-ui")
@@ -399,7 +400,8 @@ windows.  The first label carries the column header for completion UIs."
                            (substring id 0 (min id-width (length id)))
                            id-width (unless heading 'shadow))))
                    (propertize " │ " 'face 'shadow))))
-           (header (funcall row "最后交互" "用户首句" "用户末句" "项目" "ID" t)))
+           (header (funcall row "最后交互" "用户首句" "用户末句" "项目" "ID" t))
+           (live (emacs-pi-runtime-live-sessions)))
       (cl-loop for record in records
                for stamp = (plist-get record :last-user-time)
                for label = (funcall row
@@ -411,7 +413,9 @@ windows.  The first label carries the column header for completion UIs."
                                     (when-let* ((cwd (plist-get record :cwd)))
                                       (abbreviate-file-name cwd))
                                     (plist-get record :id))
-               collect (cons (propertize label 'emacs-pi-session-header header)
+               collect (cons (propertize
+                              (concat label (emacs-pi-runtime-running-mark record live))
+                              'emacs-pi-session-header header)
                              (emacs-pi-input--session-mention record))))))
 
 (defun emacs-pi-input--slash-choices ()
