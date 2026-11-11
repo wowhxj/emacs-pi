@@ -492,12 +492,6 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
   (interactive)
   (emacs-pi--open (emacs-pi-session-root (emacs-pi--require-session))))
 
-(defun emacs-pi--session-column (value width)
-  "Return VALUE fitted and padded to display WIDTH."
-  (let* ((clean (replace-regexp-in-string "[[:space:]\n\r]+" " " (or value "")))
-         (short (truncate-string-to-width clean width nil nil "…")))
-    (concat short (make-string (max 0 (- width (string-width short))) ?\s))))
-
 (defun emacs-pi--middle-truncate (value width)
   "Shorten VALUE to WIDTH while preserving its beginning and end."
   (if (<= (string-width value) width)
@@ -510,32 +504,6 @@ SESSION-DIRECTORY overrides storage for this call.  No prompt is sent."
               "…"
               (truncate-string-to-width value total (- total tail))))))
 
-(defun emacs-pi--session-label (record &optional live)
-  "Format RECORD as date, ID, workspace, and prompt preview.
-Mark it when it is among LIVE, from `emacs-pi-runtime-live-sessions'."
-  (let* ((date (format-time-string "%Y-%m-%d %H:%M"
-                                   (plist-get record :modified)))
-         (id (plist-get record :id))
-         (cwd (abbreviate-file-name (plist-get record :cwd)))
-         (name (plist-get record :name))
-         (prompt (or (plist-get record :last-preview)
-                     (plist-get record :preview)))
-         (preview (cond ((and (stringp name) (stringp prompt)
-                              (not (string-empty-p prompt)))
-                         (format "%s · %s" name prompt))
-                        (name name)
-                        (prompt prompt)
-                        (t "(empty session)")))
-         (preview-width (max 20 (- (window-body-width) 72))))
-    (concat (emacs-pi--session-column date 16) "  "
-            (emacs-pi--session-column (substring id 0 (min 12 (length id))) 12)
-            "  " (emacs-pi--session-column
-                   (emacs-pi--middle-truncate cwd 34) 34) "  "
-            (truncate-string-to-width
-             (replace-regexp-in-string "[[:space:]\n\r]+" " " preview)
-             preview-width nil nil "…")
-            (emacs-pi-runtime-running-mark record live))))
-
 (defun emacs-pi--resume-record (record)
   "Open RECORD through owner-first discovery, before checking its old cwd."
   (emacs-pi-open-session (plist-get record :path) :directory (plist-get record :cwd)
@@ -543,20 +511,12 @@ Mark it when it is among LIVE, from `emacs-pi-runtime-live-sessions'."
 
 (defun emacs-pi--pick-session (records &optional new-root)
   "Choose from RECORDS; offer a new session in NEW-ROOT when supplied."
-  (let* ((live (emacs-pi-runtime-live-sessions))
-         (choices (mapcar (lambda (record)
-                            (cons (emacs-pi--session-label record live) record))
-                          records))
-         (choices (if new-root
-                      (append choices '(("[New session]" . :new)))
-                    choices))
-         (selected (let ((vertico-sort-function nil))
-                     (completing-read
-                      (if new-root
-                          "Pi session in this directory (choose or create): "
-                        "Resume Pi (date | ID | directory | prompt): ")
-                      choices nil t)))
-         (record (cdr (assoc selected choices))))
+  (let* ((choices (emacs-pi-input--session-choices nil records #'identity))
+         (record (emacs-pi-input-read-session
+                  (if new-root
+                      "Pi session in this directory (choose or create): "
+                    "Resume Pi session: ")
+                  (if new-root (append choices '(("[New session]" . :new))) choices))))
     (cond ((eq record :new) (emacs-pi--open new-root))
           (record (emacs-pi--resume-record record)))))
 

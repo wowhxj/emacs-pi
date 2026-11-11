@@ -1723,9 +1723,9 @@
         (cl-letf (((symbol-function 'emacs-pi-history-list)
                    (lambda (&optional _root) (list record)))
                   ((symbol-function 'completing-read)
-                   (lambda (_prompt choices &rest _args)
-                     (setq choice choices)
-                     (if pick-new "[New session]" (caar choices))))
+                   (lambda (_prompt table &rest _args)
+                     (setq choice (all-completions "" table))
+                     (if pick-new "[New session]" (car choice))))
                   ((symbol-function 'emacs-pi--open)
                    (lambda (directory &optional _file)
                      (setq opened directory)))
@@ -1734,8 +1734,8 @@
           (emacs-pi-chat root)
           (should (equal opened (emacs-pi--local-root root)))
           (should (= (length choice) 2))
-          (should (string-match-p "First prompt" (caar choice)))
-          (should (string-match-p "1234567890ab" (caar choice)))
+          (should (string-match-p "First prompt" (car choice)))
+          (should (string-match-p "1234567890ab" (car choice)))
           (should (string-suffix-p "project"
                                    (emacs-pi--middle-truncate
                                     "~/very/long/nested/directory/name/project" 20)))
@@ -2044,6 +2044,32 @@
         (should (= (length (delete-dups (mapcar #'car choices))) 3))
         (should (string-match-p "0123456789ab-n" (caar choices)))
         (should (string-match-p "0123456789ab-o" (car (nth 1 choices))))))))
+
+(ert-deftest emacs-pi-resume-picker-matches-session-reference-rows ()
+  "Resume and directory pickers share the @session columns and header."
+  (let* ((emacs-pi--session (make-emacs-pi-session :session-id "current"))
+         (records (list (list :id "current" :cwd "/p" :preview "mine"
+                              :last-user-time (seconds-to-time 2))
+                        (list :id "other" :cwd "/p" :preview "theirs"
+                              :last-user-time (seconds-to-time 1))))
+         rows header opened)
+    (cl-letf (((symbol-function 'emacs-pi-runtime-live-sessions) (lambda () '("other")))
+              ((symbol-function 'completing-read)
+               (lambda (prompt table &rest _)
+                 (should (string-match-p "choose or create" prompt))
+                 (setq rows (all-completions "" table)
+                       header (funcall (alist-get 'group-function
+                                                  (cdr (funcall table "" nil 'metadata)))
+                                       (car rows) nil))
+                 (car (last rows))))
+              ((symbol-function 'emacs-pi--open) (lambda (root) (setq opened root))))
+      (emacs-pi--pick-session records "/p")
+      (should (equal opened "/p"))
+      (should (= (length rows) 3))
+      (should (string-match-p "mine" (car rows)))
+      (should (string-match-p "最后交互.*用户首句.*ID" header))
+      (should (string-suffix-p "● running" (cadr rows)))
+      (should (equal (car (last rows)) "[New session]")))))
 
 (ert-deftest emacs-pi-session-reference-sends-active-dialogue ()
   (let* ((root (make-temp-file "emacs-pi-reference-" t))

@@ -351,15 +351,20 @@ the directory whose contents should be offered."
                  width nil ?\s "…")))
     (if face (propertize column 'face face) column)))
 
-(defun emacs-pi-input--session-choices (&optional width)
-  "Return saved Pi sessions for the @session picker within display WIDTH.
-Prioritize first/latest user queries; hide the project column on narrow
-windows.  The first label carries the column header for completion UIs."
-  (let* ((current-id (and emacs-pi--session
+(defun emacs-pi-input--session-choices (&optional width records value)
+  "Return saved Pi sessions as picker rows within display WIDTH.
+Columns: last user time | first query | latest query | project (wide
+windows) | ID, with a running mark for live sessions.  The first label
+carries the column header for completion UIs.  By default list every
+session but the current one, each valued as its @session mention; the
+resume pickers pass their RECORDS, kept even when current, and VALUE, a
+function from record to choice value."
+  (let* ((current-id (and emacs-pi--session (not records)
                           (emacs-pi-session-session-id emacs-pi--session)))
+         (value (or value #'emacs-pi-input--session-mention))
          (seen (make-hash-table :test #'equal))
          (records
-          (cl-loop for record in (emacs-pi-history-list)
+          (cl-loop for record in (or records (emacs-pi-history-list))
                    for id = (plist-get record :id)
                    when (and (stringp id) (not (equal id current-id))
                              (string-match-p "\\`[[:alnum:]_-]+\\'" id)
@@ -367,7 +372,12 @@ windows.  The first label carries the column header for completion UIs."
                    collect (progn (puthash id t seen) record)))
          (ids (mapcar (lambda (record) (plist-get record :id)) records))
          (id-width 12)
-         (width (or width (- (window-body-width (minibuffer-window)) 4))))
+         (live (emacs-pi-runtime-live-sessions))
+         (marks (mapcar (lambda (record) (emacs-pi-runtime-running-mark record live))
+                        records))
+         ;; Leave room for the running mark so marked rows still fit.
+         (width (- (or width (- (window-body-width (minibuffer-window)) 4))
+                   (apply #'max 0 (mapcar #'string-width marks)))))
     ;; Extend colliding UUID prefixes, keeping the ID column aligned and unique.
     (while (not (= (length
                     (delete-dups
@@ -400,8 +410,7 @@ windows.  The first label carries the column header for completion UIs."
                            (substring id 0 (min id-width (length id)))
                            id-width (unless heading 'shadow))))
                    (propertize " │ " 'face 'shadow))))
-           (header (funcall row "最后交互" "用户首句" "用户末句" "项目" "ID" t))
-           (live (emacs-pi-runtime-live-sessions)))
+           (header (funcall row "最后交互" "用户首句" "用户末句" "项目" "ID" t)))
       (cl-loop for record in records
                for stamp = (plist-get record :last-user-time)
                for label = (funcall row
@@ -416,7 +425,28 @@ windows.  The first label carries the column header for completion UIs."
                collect (cons (propertize
                               (concat label (emacs-pi-runtime-running-mark record live))
                               'emacs-pi-session-header header)
-                             (emacs-pi-input--session-mention record))))))
+                             (funcall value record))))))
+
+(defun emacs-pi-input-read-session (prompt choices)
+  "Read one of session CHOICES with PROMPT under their column header.
+CHOICES come from `emacs-pi-input--session-choices', optionally followed by
+extra rows such as a new-session entry; return the chosen value."
+  (let* ((header (get-text-property 0 'emacs-pi-session-header (caar choices)))
+         (table (completion-table-with-metadata
+                 choices
+                 `((category . emacs-pi-session)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity)
+                   (group-function . ,(lambda (candidate transform)
+                                        (if transform candidate header))))))
+         ;; Column headers must not inherit Vertico's group decoration.
+         (vertico-group-format "%s")
+         (completion-styles (if (memq 'substring completion-styles)
+                                completion-styles
+                              (append completion-styles '(substring))))
+         (completion-ignore-case t)
+         (orderless-smart-case nil))
+    (cdr (assoc (completing-read prompt table nil t) choices))))
 
 (defun emacs-pi-input--slash-choices ()
   "Return local and Pi-provided slash commands for the picker."
